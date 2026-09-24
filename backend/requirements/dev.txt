@@ -1,0 +1,29 @@
+# ---------------------------------------------------------------------------
+# EcoMind-AI — development, testing and static-analysis dependencies
+# ---------------------------------------------------------------------------
+-r base.txt
+-r ml.txt
+-r worker.txt
+
+# --- Test framework ---------------------------------------------------------
+pytest>=8.3
+pytest-asyncio>=0.24
+pytest-cov>=6.0
+# Parallel test execution (test databases are isolated per xdist worker).
+pytest-xdist>=3.6
+# HTTP client used for in-process ASGI API tests (no network sockets needed).
+httpx>=0.27,<1.0
+
+# --- Test infrastructure adapters ------------------------------------------
+# fakeredis: in-process Redis-compatible server used when no Redis daemon is
+# available. Logged as a development adapter at startup; production uses Redis.
+fakeredis>=2.25
+# pgserver: provides real PostgreSQL binaries so development and the test suite
+# run against genuine PostgreSQL (constraints, RLS, NUMERIC, window functions)
+# rather than a dialect-approximating substitute. See ADR-0002.
+pgserver>=0.1.4
+
+# --- Static analysis / formatting ------------------------------------------
+ruff>=0.6
+mypy>=1.11
+types-python-dateutil

@@ -1,0 +1,64 @@
+# ---------------------------------------------------------------------------
+# EcoMind-AI — backend runtime dependencies (API service)
+#
+# Strategy: tolerant lower-bound ranges here; the exact resolved set used for
+# a verified build is frozen into `requirements/lock.txt`.
+# Every dependency below has a stated reason. Nothing is included "because it
+# is fashionable".
+# ---------------------------------------------------------------------------
+
+# --- Web framework / ASGI ---------------------------------------------------
+# FastAPI: typed request/response contracts, dependency injection for auth and
+# tenancy, and native OpenAPI generation (a project requirement).
+fastapi>=0.115,<1.0
+# uvicorn[standard]: ASGI server, uvicorn-worker, uvloop/httptools for latency.
+uvicorn[standard]>=0.30,<1.0
+
+# --- Validation / settings --------------------------------------------------
+# Pydantic v2: request/response schemas + settings validation.
+pydantic>=2.9,<3.0
+# Environment-driven configuration (section 56 of the specification).
+pydantic-settings>=2.5,<3.0
+
+# --- Persistence ------------------------------------------------------------
+# SQLAlchemy 2.x async ORM/query layer (repository + unit-of-work pattern).
+sqlalchemy[asyncio]>=2.0.35,<2.1
+# Alembic: versioned, reviewable schema migrations (never manual DDL in prod).
+alembic>=1.13,<2.0
+# asyncpg: the application's PostgreSQL driver (supports unix sockets).
+asyncpg>=0.30,<1.0
+# psycopg2-binary: used only by Alembic, which runs synchronously.
+psycopg2-binary>=2.9,<3.0
+# greenlet: required by SQLAlchemy's async bridge.
+greenlet>=3.0,<4.0
+
+# --- Authentication / cryptography ------------------------------------------
+# PyJWT (not python-jose): actively maintained, audited, no known CVEs.
+PyJWT>=2.9,<3.0
+# cryptography: RSA/EC signing support for JWT and secure random utilities.
+cryptography>=43.0
+# argon2-cffi: Argon2id password hashing (OWASP-recommended). Passlib is
+# deliberately NOT used: it is unmaintained and breaks against bcrypt>=4.
+argon2-cffi>=23.1
+
+# --- HTTP / transport -------------------------------------------------------
+# httpx: async outbound HTTP for integration adapters; also drives API tests.
+httpx>=0.27,<1.0
+# python-multipart: multipart/form-data parsing for file uploads.
+python-multipart>=0.0.9
+
+# --- Caching / messaging ----------------------------------------------------
+# redis: client library; works against real Redis or the fakeredis dev adapter.
+redis>=5.0
+
+# --- Observability ----------------------------------------------------------
+# structlog: structured JSON logging with request-id correlation.
+structlog>=24.1
+# prometheus-client: /metrics exposition for latency and error-rate tracking.
+prometheus-client>=0.20
+
+# --- Utilities --------------------------------------------------------------
+# orjson: fast JSON for large analytics payloads.
+orjson>=3.10
+# python-dateutil: RFC-5545 (RRULE) parsing for collection schedules.
+python-dateutil>=2.9

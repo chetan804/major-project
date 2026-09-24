@@ -1,0 +1,26 @@
+# ---------------------------------------------------------------------------
+# EcoMind-AI — OPTIONAL deep-learning vision extra
+#
+# Install only when BOTH of the following hold:
+#   1. A real, licensed, labelled waste-image corpus is available
+#      (e.g. TrashNet, TACO, or a tenant-supplied dataset).
+#   2. CPU/GPU budget is available for training and batch evaluation.
+#
+# Activate at runtime with:
+#   CLASSIFICATION_BACKEND=torchvision
+#
+# The torchvision backend is implemented behind the same
+# `ClassificationBackend` interface as the classical backend, so the platform
+# does not change when it is enabled. Until it has been trained and evaluated
+# on a real corpus, the platform reports the classical model's measured
+# metrics only, and any deep-learning model is marked CANDIDATE in the model
+# registry (never ACTIVE) — see docs/ai/model-registry.md.
+#
+# This extra is deliberately NOT part of requirements/ml.txt: a ~529 MB wheel
+# (torch 2.x CPU) on a 2-vCPU host with no image dataset would buy nothing but
+# download time.
+# ---------------------------------------------------------------------------
+-r ml.txt
+
+torch>=2.4
+torchvision>=0.19

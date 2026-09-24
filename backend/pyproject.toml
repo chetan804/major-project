@@ -1,0 +1,107 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ecomind-ai-backend"
+version = "0.1.0"
+description = "EcoMind-AI — AI-powered smart waste management & environmental intelligence platform (backend)"
+requires-python = ">=3.11"
+readme = "../README.md"
+license = { text = "Proprietary" }
+
+# Dependencies live in requirements/*.txt rather than here so that the API,
+# worker, ML and optional-vision sets stay separately installable (a worker
+# image must not have to pull OpenCV, and the API must not need Celery).
+dependencies = []
+
+[tool.setuptools]
+packages = ["app"]
+
+# ===========================================================================
+# Ruff — lint + format
+# ===========================================================================
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["app", "tests", "../scripts"]
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "RET",  # flake8-return
+    "PTH",  # flake8-use-pathlib
+    "DTZ",  # flake8-datetimez (enforces timezone-aware datetimes)
+    "T20",  # flake8-print (no stray print() in application code)
+    "S",    # flake8-bandit (security-relevant rules)
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "B008",    # FastAPI's Depends()/Query() defaults are the intended idiom
+    "RUF012",  # ClassVar annotations on SQLAlchemy declarative attrs are noisy
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately use asserts, hardcoded fixture values and long literals.
+"tests/**" = ["S101", "S105", "S106", "S107", "S311", "ARG001", "ARG002", "PLR2004"]
+"migrations/**" = ["T20", "I001"]
+"app/scripts/**" = ["T20"]  # CLI scripts are allowed to print
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+# ===========================================================================
+# mypy — static typing
+# ===========================================================================
+[tool.mypy]
+python_version = "3.11"
+plugins = ["pydantic.mypy"]
+files = ["app"]
+# A pragmatic-but-firm baseline: every function annotated, real errors caught,
+# while tolerating third-party stubs that are absent or incomplete.
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true
+ignore_missing_imports = true
+show_error_codes = true
+exclude = ["^migrations/"]
+
+[[tool.mypy.overrides]]
+module = ["pgserver.*", "fakeredis.*", "celery.*", "ortools.*", "structlog.*", "prometheus_client.*"]
+ignore_missing_imports = true
+
+# ===========================================================================
+# pytest
+# ===========================================================================
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Makes the `app` package importable without an editable install.
+pythonpath = ["."]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "unit: pure logic, no I/O",
+    "api: exercises HTTP routes through the ASGI app",
+    "db: requires a live PostgreSQL database",
+    "security: authorization, isolation and hardening assertions",
+    "architecture: structural rules about the codebase itself",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:starlette.*",
+    "ignore::DeprecationWarning:httpx.*",
+]

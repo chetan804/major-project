@@ -1,0 +1,17 @@
+# ---------------------------------------------------------------------------
+# EcoMind-AI — background worker dependencies
+#
+# Installed into the worker/beat image. Kept separate from base.txt so the API
+# image stays lean and the broker dependency is explicit.
+#
+# IMPORTANT: Celery is the production dispatch mechanism, but job *functions*
+# are pure, idempotent, tenant-scoped callables that can also be invoked
+# directly via `python -m app.workers.cli run <job>`. This keeps jobs testable
+# without a broker (see ADR-0009) and is not a mock.
+# ---------------------------------------------------------------------------
+-r base.txt
+
+# Celery + Redis broker/result backend for scheduled and queued work:
+# forecast generation, telemetry aggregation, anomaly detection, report
+# generation, notification delivery, webhook delivery, data retention.
+celery[redis]>=5.4,<6.0
