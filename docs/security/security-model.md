@@ -9,7 +9,7 @@
 
 | # | Threat | Control | Verified by |
 |---|---|---|---|
-| T1 | Cross-tenant data access (IDOR/BOLA) | Server-derived tenant context; `TenantScopedRepository`; PostgreSQL RLS; 404-on-foreign; security audit events | `tests/security/test_tenant_isolation.py` |
+| T1 | Cross-tenant data access (IDOR/BOLA) | Server-derived tenant context; `TenantScopedRepository`; PostgreSQL RLS; 404-on-foreign; security audit events | `backend/tests/db/test_rls_coverage.py` (RLS enforcement, proven per tenant) |
 | T2 | Privilege escalation | Permission-string checks; `roles.assign.elevate` gating; permission-set provenance; no client-supplied scopes | `tests/security/test_privilege_escalation.py` |
 | T3 | Credential theft / session hijack | Argon2id; 15-min access tokens; rotating refresh tokens with reuse detection + family revocation; session revocation; lockout | `tests/auth/test_token_lifecycle.py` |
 | T4 | SQL injection | SQLAlchemy parameterised queries only; no string-built SQL; allow-listed sort columns | `tests/security/test_injection.py` |
@@ -85,10 +85,57 @@ Detail in `rbac.md`. Security-relevant summary:
    context. No "unscoped" helper exists in the codebase; a repository method
    that needs cross-tenant access must be named `*_platform` and is only
    reachable with a platform permission.
-2. **Database layer:** RLS enabled and forced on every tenant table with
-   `tenant_id = current_setting('app.tenant_id', true)::uuid`; the session
-   variable is set per transaction by the connection manager. Tests connect as a
-   **non-owner** role so the policy genuinely applies.
+2. **Database layer:** RLS enabled and forced on every tenant table, with both
+   `USING` and `WITH CHECK` clauses:
+
+   ```sql
+   USING      (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+   ```
+
+   `USING` filters rows that are read; `WITH CHECK` filters rows that are written.
+   Omitting either opens a real hole — without `WITH CHECK` a tenant can *insert* a
+   row owned by another tenant, and the forged row is invisible to the writer, so
+   nothing looks wrong until the other tenant's data is reconciled. `NULLIF` folds
+   an unset or blank setting to `NULL`, and a comparison against `NULL` is never
+   true, so an unconfigured connection sees **zero rows rather than all rows**: the
+   policy fails closed. The session variable is transaction-local
+   (`set_config(..., true)`), so it cannot survive a commit and leak into the next
+   request that reuses the pooled connection.
+
+   The DDL is generated from one place (`app/db/rls.py`), never hand-written per
+   migration, and `tables_without_rls()` asks the live database what is actually
+   true at deploy time rather than trusting that migrations ran.
+
+### Deployment requirement: the application must not connect as a superuser
+
+**Measured on PostgreSQL 16 in this repository's own test cluster: a superuser
+bypasses row-level security even with `FORCE ROW LEVEL SECURITY` set.** The same is
+true of any role holding `BYPASSRLS`.
+
+| Connecting as | `SELECT` on a forced-RLS table with two tenants' rows |
+|---|---|
+| `postgres` (superuser) | returns **both** tenants' rows |
+| an ordinary role, tenant A bound | returns tenant A's rows only |
+
+Two consequences, both mandatory:
+
+* **Production:** the application's database role must be an ordinary role — not a
+  superuser, and without `BYPASSRLS`. A deployment that gets this wrong silently
+  disables the entire third isolation layer while every test and policy still looks
+  correct. This is checked by `app.db.rls.tables_without_rls()` and must be part of
+  the deployment checklist.
+* **Testing:** the suite connects as `postgres` to create and migrate the database,
+  so a policy test run on that connection can only pass when the policy is *broken*.
+  `tests/conftest.py` therefore provisions a dedicated non-superuser login role
+  (`ecomind_rls_test`) and binds it into the engine URL. Binding it into the URL
+  rather than issuing `SET ROLE` matters: a `SET ROLE` is session state, and
+  SQLAlchemy returns the connection to the pool on the first `rollback()`, so the
+  superuser would be silently restored part-way through a test.
+
+   `FORCE ROW LEVEL SECURITY` is still required as well, because the table *owner*
+   bypasses RLS without it and the migration role typically owns the tables it
+   creates.
 3. **Test layer:** an adversarial suite that authenticates as tenant A and
    attempts read/update/delete/list/export, file access, telemetry access and
    analytics queries against tenant B's identifiers, asserting 404/empty and the

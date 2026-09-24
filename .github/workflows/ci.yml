@@ -1,0 +1,126 @@
+# ---------------------------------------------------------------------------
+# EcoMind-AI — continuous integration
+#
+# Runs the same commands `make gate` runs locally, in the same order, so that a
+# green build means the same thing in both places.
+#
+# Two deliberate choices:
+#
+# * **No `services: postgres` block.** The suite provisions its own real
+#   PostgreSQL 16 through the bundled `pgserver` binaries (see ADR-0002). That
+#   keeps one code path for local development, tests and CI, and removes the
+#   version drift between a CI service image and a developer's cluster.
+#
+# * **`fail-fast: false`.** A lint failure and a test failure are independent
+#   findings. Reporting only the first one costs a second push to discover the
+#   second, which is exactly the cycle CI exists to shorten.
+#
+# Honest limitation: this workflow has not been executed. The development sandbox
+# has no network access to GitHub Actions and no Docker, so the YAML is authored
+# and reviewed but unverified. It is marked as such in docs/project-state.md.
+# ---------------------------------------------------------------------------
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ENVIRONMENT: test
+
+jobs:
+  static-analysis:
+    name: Lint, types and secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements/*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements/dev.txt
+
+      - name: Generate a test signing key
+        # Settings refuses to start without a JWT secret, and it must be at least
+        # 32 characters. Generating one per run keeps a credential-shaped literal
+        # out of the repository, so no reader — and no scanner — has to judge
+        # whether a value committed to a CI file is safe. No test depends on it.
+        run: |
+          echo "JWT_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(64))')" >> "$GITHUB_ENV"
+
+      # The Makefile targets, not copies of their commands. Duplicating them is
+      # how the database URL resolution came to exist in two places and produce a
+      # green local run beside a failing CI run.
+      - name: Lint and formatting
+        run: make lint
+
+      - name: Type check
+        run: make typecheck
+
+      - name: Secret scan
+        run: make secrets
+
+  tests:
+    name: Tests (real PostgreSQL 16)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements/*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements/dev.txt
+
+      - name: Generate a test signing key
+        run: |
+          echo "JWT_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(64))')" >> "$GITHUB_ENV"
+
+      # Starts the bundled PostgreSQL 16 cluster and reports what is real here.
+      - name: Verify the environment and record what is real
+        run: make env-check
+
+      # Migrations must be applied before the drift check can mean anything:
+      # `alembic check` refuses to compare against a database that is behind
+      # ("Target database is not up to date"), which is the state a fresh runner
+      # starts in. Both steps are non-destructive.
+      #
+      # The reversible round trip (downgrade base, then upgrade head) is not
+      # repeated here. It drops every table, and it is already exercised against
+      # the throwaway test database by backend/tests/db/test_migrations.py, which
+      # the next step runs.
+      - name: Apply migrations, then verify the models have not drifted
+        run: |
+          make migrate
+          make migrate-check
+
+      - name: Tests
+        run: make test
+
+      - name: Upload the test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-last-failed
+          path: backend/.pytest_cache/v/cache/lastfailed
+          if-no-files-found: ignore
+          retention-days: 7

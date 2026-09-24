@@ -3,7 +3,7 @@
 **This file is the continuity source for future development sessions.**
 Update it at the end of every working session (section 76).
 
-**Last updated:** 2026-09-24 · **Session:** 1 (Phase 0)
+**Last updated:** 2026-09-24 · **Session:** 2 (Phase 1)
 
 ---
 
@@ -11,11 +11,12 @@ Update it at the end of every working session (section 76).
 
 | Field | Value |
 |---|---|
-| Current phase | **Phase 0 — Requirements and architecture (COMPLETE)** |
-| Next action | Phase 1 — repository and infrastructure scaffolding |
+| Current phase | **Phase 1 — Repository and infrastructure (VERIFIED CORE COMPLETE)** |
+| Next action | Phase 1 remainder: container artefacts, then Phase 2 (tenancy, identity, authorization) |
 | Repository branch | `arena/01a0d3bf-major-project` |
-| Baseline commit | `cbe367e` (initial commit, README only) |
+| Baseline commit | `cbe367e` (initial commit, README only) · Phase 0 `5cdc07e` |
 | Architecture status | Coherent and complete at design level; no known blocking open question |
+| Gate status | `make gate` passes: lint, format, mypy, secret scan, migration drift check, 254 tests |
 
 ---
 
@@ -25,8 +26,19 @@ Update it at the end of every working session (section 76).
 invariants, state machines, business rules, metric definitions, permissions,
 endpoints, tables, tests and risks.
 
-**Code:** none yet — Phase 0 is deliberately design-only per section 77.
-Scaffolding present:
+**Code implemented and verified (Phase 1):**
+
+| Area | Delivered |
+|---|---|
+| Application core | `app/main.py` (factory, lifespan, middleware order), `core/{config,errors,context,logging,metrics,cache,responses,time,middleware}.py` |
+| Database | `app/db/{types,base,session,rls}.py` — column type aliases, declarative base with mixins, engine and session lifecycle, **row-level security generator** |
+| API | `app/api/{deps,errors,health}.py` — dependency layer, exception handlers, `/health`, `/ready`, `/metrics` |
+| Migrations | Alembic wired to the settings-derived URL, empty `0001_baseline` verified reversible with no model drift |
+| Scripts | `scripts/{pg_server,bootstrap,check_secrets,verify_environment}.py\|sh` |
+| Tooling | `Makefile` (`make gate`), `.github/workflows/ci.yml` |
+| Tests | 254 tests across `unit`, `db`, `api`, `security`, `architecture` markers — all green |
+
+Scaffolding present from Phase 0:
 
 | File | Purpose |
 |---|---|
@@ -88,48 +100,83 @@ made anywhere** — deliberately (ADR-0008).
 
 ## 8. Tests
 
-| Suite | State |
-|---|---|
-| All suites | designed, none implemented (Phase 1 creates the harness) |
-| Verification performed in Phase 0 | environment capability probes only — results recorded with commands in `docs/environment.md` |
+`make test` → **254 passed**, 0 skipped, 0 failed (~7 s).
+
+| Marker | Files | What it pins |
+|---|---|---|
+| `unit` | `test_config`, `test_time`, `test_cache`, `test_logging` | settings validation matrix, aware-UTC rules and tenant-day bounds, cache key scoping and failure containment, log redaction |
+| `api` | `test_health`, `test_error_contract`, `test_request_context` | probe semantics, exact error-envelope contract, contextvar propagation across a pure-ASGI stack |
+| `security` | `test_security_headers` | headers on success *and* error, no HSTS in dev, CORS allow/reject |
+| `db` | `test_database`, `test_types`, `test_migrations`, `test_rls_coverage` | constraints enforced by PostgreSQL, exact `NUMERIC`, migration reversibility and drift, **RLS proven enforced** |
+| `architecture` | `test_import_rules`, `test_route_inventory`, `test_secret_scanner` | layer direction, route classification gate, secret-scan detection and its negative cases |
+
+Verification performed in Phase 0 (environment capability probes) is recorded with
+commands in `docs/environment.md`.
+
+**Tests that would have passed vacuously have been removed or repaired** — a guard
+that checks nothing is worse than no guard, because its presence is trusted. The
+route-inventory traversal, the layer-map skip and the float/NUMERIC drift assertion
+were each rewritten after they were found to be checking the wrong thing. Details
+in `docs/phases.md` (Phase 1 report).
 
 ## 9. Known issues
 
-1. No blocking issues. Two scope decisions have documented defaults and are
-   listed for confirmation in `risks-and-assumptions.md` §4 (Q1 session depth
-   priority, Q2 frontend breadth).
-2. `bootstrap.sh` cannot complete end-to-end yet: its migration and seed steps
-   (`alembic upgrade head`, `app.scripts.seed`) have no target until Phase 1/2.
-   The dependency-install and PostgreSQL steps it performs are verified
-   working. Run `scripts/pg_server.py start` directly until then.
-3. `scripts/check_secrets.py`, referenced by the testing and security docs, is a
-   Phase 1 deliverable.
-4. Docker/Compose artefacts will be authored but cannot be build-verified in
-   this environment (no Docker available — see `docs/environment.md` §4).
+1. **Container artefacts are not written yet.** Dockerfiles, Compose and nginx were
+   planned for Phase 1. They are deferred rather than committed unverified: this
+   environment has no Docker daemon, so a container configuration could be authored
+   and *statistically reviewed* but never built, started or health-checked. Shipping
+   an unverifiable artefact under a "phase complete" report would be exactly the
+   overclaim the master prompt forbids. The CI workflow is written but also
+   unexecuted for the same reason (no network access to GitHub Actions from the
+   sandbox) — it is marked as such in the workflow file itself.
+2. **The frontend is not scaffolded yet.** Deferred to the frontend phase rather
+   than created as an empty shell now, so that no route exists without a screen
+   behind it (section 19).
+3. **`bootstrap.sh` cannot complete end-to-end yet.** Its migration step now has a
+   real target, but its seed step (`app.scripts.seed`) does not until Phase 2
+   creates the taxonomy. `make bootstrap` and `scripts/pg_server.py start` work.
+4. **RLS is implemented and proven, but nothing is protected by it yet** — there
+   are no tenant tables until Phase 2. The generator, the coverage report and the
+   deploy-time introspection query are all in place and tested, so Phase 2's first
+   table is covered on the day it is created.
+5. **Cosmetic third-party noise at interpreter exit.** `pgserver` logs
+   `ValueError: I/O operation on closed file` from its `atexit` cleanup after the
+   test process has already flushed. It appears *after* the pytest summary line and
+   is unrelated to any test result — no test fails and the exit code is 0. Noted so
+   a future session does not spend time chasing it; a fix belongs upstream.
+6. **PostGIS remains unavailable** (ADR-0005). The geospatial fallback is documented
+   and map features must state which path is in use.
+7. Two Phase 0 scope questions (session depth priority, frontend breadth) still have
+   documented defaults in `risks-and-assumptions.md` §4 and remain available for
+   confirmation.
+
+### A finding worth carrying forward
+
+While writing the RLS tests, measurement showed that **a PostgreSQL superuser
+bypasses row-level security even with `FORCE ROW LEVEL SECURITY` set**. The test
+suite connects as `postgres`, so a policy test run on that connection returns every
+tenant's rows and can only pass if the policy is broken. The harness therefore
+provisions a dedicated non-superuser login role and binds it into the connection
+URL. The same property is a production requirement: the application must connect as
+an ordinary role, or the third isolation layer is inert. Recorded in
+`docs/security/security-model.md`.
 
 ## 10. Next recommended action
 
-Phase 1, in this order:
+Phase 1 remainder, then Phase 2:
 
-1. Write `scripts/check_secrets.py` (the credential-shaped-string scanner used by
-   the CI and audit gates).
-   *Already done from Phase 0 scope: `scripts/pg_server.py`.*
-2. Create the repository skeleton exactly as designed in
-   `architecture/architecture.md` §3 — including empty boundary modules, so the
-   import-rule test has something to enforce from the very first commit.
-3. `pyproject.toml` (ruff, mypy, pytest markers) + `Makefile`.
-4. `core/config.py` (typed settings, startup validation), `core/errors.py`
-   (closed error enum), `core/logging.py` (structured logs + request id),
-   middleware stack, `/health`, `/ready`, `/metrics`.
-5. Alembic initialised with an empty baseline migration, verified reversible.
-6. `tests/` harness: PostgreSQL template database per xdist worker, RLS-enabled
-   test role, fixtures, and the architecture import-rule test.
-7. Frontend scaffold (Vite + TS + Tailwind + router + query client + i18n) with
-   the app shell and a permission-gated sidebar driven by a placeholder
-   permission catalogue — to be wired to the real catalogue in Phase 2.
-8. Docker Compose + Dockerfiles + nginx + CI workflow (authored, statically
-   reviewed).
-9. Run `make audit`, record the gate report, update this file.
+1. **Phase 1 remainder — container artefacts** (Dockerfiles, Compose, nginx, and a
+   CI run on a real runner). Each must be marked verified or unverified explicitly.
+2. **Frontend scaffold** — Vite + TypeScript + Tailwind + router + query client,
+   with an app shell and a sidebar driven by the real permission catalogue once
+   Phase 2 defines it. No route without a screen behind it.
+3. **Phase 2 — tenancy, identity and authorization:** `tenants`, `users`,
+   `memberships`, `roles`; the first real migration (with RLS applied through
+   `app/db/rls.py`); authentication with Argon2id and rotating refresh tokens;
+   the permission catalogue and `require_permission` dependency; then flip
+   `_declared_permissions` in `tests/architecture/test_route_inventory.py` from
+   returning `[]` to reading the declared permission set, which immediately makes
+   every newly added route either explicitly public or explicitly protected.
 
 ## 11. Standing constraints for the next session
 
