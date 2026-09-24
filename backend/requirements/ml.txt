@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------------------
+# EcoMind-AI — analytics / machine-learning dependencies
+#
+# Installed where forecasting, anomaly detection, waste classification and
+# environmental analytics run (API process for on-demand inference, and the
+# worker process for training/evaluation jobs).
+#
+# NOTE ON DEEP LEARNING: PyTorch is intentionally NOT a hard dependency.
+# The project ships a genuinely trained, genuinely evaluated classical
+# computer-vision classifier (colour/texture/edge features + scikit-learn)
+# and a pluggable `ClassificationBackend` interface. A torchvision backend is
+# implemented behind the optional extra in `vision.txt`, to be enabled when a
+# real labelled image corpus and GPU/CPU budget are available. Fabricating
+# deep-learning accuracy on a synthetic corpus would violate the project's
+# scientific-integrity rules (sections 49, 62, 64).
+# ---------------------------------------------------------------------------
+
+# Numerical / dataframe foundation.
+numpy>=1.26,<3.0
+pandas>=2.2,<3.0
+
+# Models: gradient-boosted regression for forecasting, classical CV features
+# for classification, IsolationForest for anomaly detection, and the metrics
+# pipeline (accuracy/precision/recall/F1/confusion matrix).
+scikit-learn>=1.5,<2.0
+joblib>=1.4
+
+# Image decoding, validation and preprocessing for waste classification.
+pillow>=10.4
+opencv-python-headless>=4.10
+
+# Deterministic combinatorial optimisation (VRP/CP-SAT). Chosen over a
+# hand-rolled heuristic because capacity + time-window constrained routing is
+# a hard combinatorial problem requiring a proven solver.
+ortools>=9.11

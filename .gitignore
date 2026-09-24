@@ -1,0 +1,75 @@
+# ---------------------------------------------------------------------------
+# EcoMind-AI — version control exclusions
+# ---------------------------------------------------------------------------
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.python-version
+
+# Test / coverage / tooling caches
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.vite/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
+npm-debug.log*
+yarn-error.log*
+.pnpm-store/
+
+# Local runtime state (dev postgres cluster, pid/socket files, logs)
+.runtime/
+.pgdata/
+*.pid
+*.sock
+logs/
+*.log
+
+# Local object storage / generated artifacts
+storage/
+data/exports/
+ml/artifacts/*
+!ml/artifacts/.gitkeep
+ml/datasets/raw/
+ml/datasets/processed/*
+!ml/datasets/processed/.gitkeep
+
+# Secrets & local configuration — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+service-account*.json
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
