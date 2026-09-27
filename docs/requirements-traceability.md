@@ -119,17 +119,25 @@ otherwise noted.
 
 | Category | Requirements tracked | Implemented | In progress | Designed |
 |---|---|---|---|---|
-| Platform/architecture | 13 | 0 | 0 | 13 |
-| Identity/access/security | 14 | 0 | 0 | 14 |
+| Platform/architecture | 13 | 0 | 13 | 0 |
+| Identity/access/security | 14 | 8 | 6 | 0 |
 | Waste/IoT/operations | 20 | 0 | 0 | 20 |
 | Intelligence/analytics/environment | 22 | 0 | 0 | 22 |
-| **Total** | **69** | **0** | **0** | **69** |
+| **Total** | **69** | **8** | **19** | **42** |
+
+Updated 2026-09-27, after Phase 2 commit `7edd518`.
+
+**Identity/access/security** is the only category with progress, and it is partial:
+the schema, the permission catalogue, the seeded role matrix, row-level security
+and the authentication endpoints exist; the user/role/tenant administration
+endpoints, the adversarial isolation tests and the audit-log service do not.
+
+**Platform/architecture** moved wholesale from *designed* to *in progress* because
+the schema it specifies now exists as migrations and RLS policies. It is not
+*implemented* until the container artefacts, the CI run and the seed script land.
 
 Every requirement in sections 0–80 of the master specification has a row here.
 A requirement with no home would be an architecture gap, and there are none:
 the two items deliberately outside scope (citizen mobile app, billing) are
 recorded in `architecture/domain-model.md` §8 and `risks-and-assumptions.md` §5
 with reasons, not silently dropped.
-
-**Phase 0 conclusion:** traceability is complete at the design level; the matrix
-becomes meaningful as `Status` advances at each phase gate.
