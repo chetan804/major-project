@@ -106,6 +106,39 @@ GLOBAL_TABLES: dict[str, str] = {
         "are shared reference data with a citation and a version, not tenant data."
     ),
     "unit_conversions": ("Physical unit conversion constants. Global by definition."),
+    "permissions": (
+        "The permission catalogue. A code is platform-wide vocabulary, not tenant "
+        "data: every tenant's roles reference the same rows, and the RBAC matrix "
+        "test asserts the catalogue rather than a per-tenant copy."
+    ),
+    "waste_materials": (
+        "Platform-wide material taxonomy under the shared waste categories, so that "
+        "recovery and market-value analytics stay comparable between tenants."
+    ),
+    "ai_models": (
+        "The platform model registry. Promotion is a platform action "
+        "(platform.models.manage), so the registry cannot be tenant-owned."
+    ),
+    "ai_model_versions": (
+        "Immutable model versions, promoted by the platform. Evaluation *metrics* "
+        "are tenant-scoped because they are computed on tenant data."
+    ),
+    "report_definitions": (
+        "The report catalogue. Definitions are platform-wide; their runs are "
+        "tenant-scoped."
+    ),
+    "notification_templates": (
+        "User-facing copy per type, channel and locale. Shared so that every tenant "
+        "starts from consistent wording; i18n readiness."
+    ),
+    "integrations": (
+        "The adapter registry. Adapter classes are platform code, and the "
+        "configuration column holds secret *references* rather than secrets."
+    ),
+    "data_retention_policies": (
+        "Platform defaults for how long each class of data is kept. A tenant "
+        "override is a separate, audited change to these rows."
+    ),
 }
 
 
