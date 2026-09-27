@@ -35,14 +35,29 @@ from app.core.time import utc_now
 
 __all__ = [
     "NAMING_CONVENTION",
+    "PLATFORM_SCOPE_ID",
     "AuditActorMixin",
     "Base",
     "SoftDeleteMixin",
+    "TenantKeyMixin",
     "TenantScopedMixin",
     "TimestampMixin",
     "UUIDPrimaryKeyMixin",
     "VersionMixin",
 ]
+
+#: The identifier used for rows that belong to no tenant: platform-level audit
+#: records, system job runs, platform-scoped domain events and the sessions of
+#: platform operators.
+#:
+#: Why a sentinel rather than ``NULL``: every tenant-owned table is under
+#: row-level security (ADR-0003), and a ``NULL`` tenant id fails the policy's
+#: ``WITH CHECK`` on write *and* is invisible to every reader afterwards. A row
+#: written with ``NULL`` would therefore be silently lost — the worst possible
+#: outcome for an audit trail. The sentinel keeps the column ``NOT NULL``, keeps
+#: RLS satisfiable for platform actors (whose context is bound to this same
+#: value), and keeps platform rows invisible to every tenant context.
+PLATFORM_SCOPE_ID = UUID("00000000-0000-0000-0000-000000000000")
 
 #: Deterministic constraint naming. See the module docstring.
 NAMING_CONVENTION: dict[str, str] = {
@@ -142,6 +157,44 @@ class TenantScopedMixin:
             nullable=False,
             index=True,
             doc="Owning tenant. Enforced here, in the repository and by RLS.",
+        )
+
+
+class TenantKeyMixin:
+    """
+    A non-null tenant key **without** a foreign key to ``tenants``.
+
+    Used by the tables a *platform* actor legitimately writes to: ``sessions``
+    (a platform operator logs in too), ``audit_logs``, ``domain_events`` and
+    ``job_runs``. Those rows carry :data:`PLATFORM_SCOPE_ID` when no tenant is
+    involved.
+
+    The difference from :class:`TenantScopedMixin` is the missing constraint,
+    and it is deliberate rather than an omission:
+
+    * a foreign key to ``tenants`` cannot reference a row that does not exist,
+      so the platform sentinel would violate it;
+    * deleting a tenant must not be able to cascade away its audit trail, and
+      ``ON DELETE RESTRICT`` on ``audit_logs`` would make tenant offboarding
+      impossible without an explicit archival step that the retention job
+      already performs.
+
+    The column is still ``NOT NULL`` and still indexed, so the query layer and
+    the RLS policy treat it exactly like any other tenant-owned table. The
+    distinction is only that this table may also hold platform-scope rows.
+    """
+
+    @declared_attr
+    def tenant_id(cls) -> Mapped[UUID]:  # noqa: N805 - SQLAlchemy passes the class
+        return mapped_column(
+            PGUUID(as_uuid=True),
+            nullable=False,
+            index=True,
+            server_default=text("'00000000-0000-0000-0000-000000000000'::uuid"),
+            doc=(
+                "Owning tenant, or the platform sentinel for rows that belong to "
+                "no tenant. Enforced by the repository and by RLS."
+            ),
         )
 
 
