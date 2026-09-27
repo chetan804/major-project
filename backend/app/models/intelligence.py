@@ -48,7 +48,7 @@ from app.db.base import (
     TimestampMixin,
     UUIDPrimaryKeyMixin,
 )
-from app.db.types import Code, Confidence, LongText, ShortText, Score
+from app.db.types import Code, Confidence, LongText, Score, ShortText
 from app.models._enums import (
     AnomalyDetectionMethod,
     AnomalyStatus,
@@ -160,7 +160,9 @@ class AIModelVersion(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     artifact_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     artifact_checksum: Mapped[str | None] = mapped_column(Text, nullable=True)
     training_dataset_id: Mapped[UUID | None] = mapped_column(nullable=True)
-    training_started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    training_started_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     training_completed_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -190,8 +192,12 @@ class MLDataset(Base, TenantScopedMixin, TimestampMixin):
         doc="LABELLED_IMAGES, TELEMETRY_HISTORY, COLLECTION_HISTORY or SYNTHETIC.",
     )
     row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    date_range_start: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    date_range_end: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    date_range_start: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    date_range_end: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     checksum: Mapped[str | None] = mapped_column(Text, nullable=True)
     storage_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_synthetic: Mapped[bool] = mapped_column(
@@ -283,10 +289,16 @@ class ForecastRun(Base, TenantScopedMixin, TimestampMixin):
         server_default=ForecastGranularity.DAY.value,
     )
     horizon_periods: Mapped[int] = mapped_column(Integer, nullable=False)
-    horizon_start: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    horizon_start: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     horizon_end: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    input_window_start: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    input_window_end: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    input_window_start: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    input_window_end: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     input_record_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     feature_definition_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     random_seed: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -384,8 +396,12 @@ class Anomaly(Base, TenantScopedMixin, TimestampMixin):
         nullable=False,
     )
     method_parameters: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    baseline_window_start: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    baseline_window_end: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    baseline_window_start: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    baseline_window_end: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     score: Mapped[Score | None] = mapped_column(nullable=True)
     threshold: Mapped[Score | None] = mapped_column(nullable=True)
     severity: Mapped[Severity] = mapped_column(
@@ -513,14 +529,18 @@ class WasteClassification(Base, TenantScopedMixin, TimestampMixin):
         nullable=False,
         server_default=ProvenanceKind.PREDICTED.value,
     )
-    human_corrected_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    human_corrected_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ClassificationFeedback(Base, TenantScopedMixin, TimestampMixin):
     """The closed loop: human judgement on a prediction, kept for retraining."""
 
     __tablename__ = "classification_feedback"
-    __table_args__ = (Index("ix_classification_feedback_classification", "waste_classification_id"),)
+    __table_args__ = (
+        Index("ix_classification_feedback_classification", "waste_classification_id"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, server_default=text("gen_random_uuid()"))
     waste_classification_id: Mapped[UUID] = mapped_column(
@@ -639,4 +659,3 @@ class RecommendationFeedback(Base, TenantScopedMixin, TimestampMixin):
         nullable=False,
         server_default=text("now()"),
     )
-

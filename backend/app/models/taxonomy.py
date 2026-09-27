@@ -134,7 +134,9 @@ class WasteMaterial(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     category: Mapped[WasteCategory] = relationship(back_populates="materials")
 
 
-class TenantWasteCategory(Base, UUIDPrimaryKeyMixin, TenantScopedMixin, TimestampMixin, SoftDeleteMixin):
+class TenantWasteCategory(
+    Base, UUIDPrimaryKeyMixin, TenantScopedMixin, TimestampMixin, SoftDeleteMixin
+):
     """
     A category a tenant adds on top of the platform baseline.
 

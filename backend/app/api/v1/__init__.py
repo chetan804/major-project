@@ -25,6 +25,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.api.v1 import auth
+
 __all__ = ["api_v1_router"]
 
 api_v1_router = APIRouter()
+
+# Authentication is mounted first because every other router depends on the actor
+# it produces. Later phases add their routers here in the order the phase plan
+# lists them.
+api_v1_router.include_router(auth.router)

@@ -124,8 +124,7 @@ GLOBAL_TABLES: dict[str, str] = {
         "are tenant-scoped because they are computed on tenant data."
     ),
     "report_definitions": (
-        "The report catalogue. Definitions are platform-wide; their runs are "
-        "tenant-scoped."
+        "The report catalogue. Definitions are platform-wide; their runs are tenant-scoped."
     ),
     "notification_templates": (
         "User-facing copy per type, channel and locale. Shared so that every tenant "

@@ -1,5 +1,5 @@
 """
-Fleet and workforce: vehicles, drivers and their assignments (``erd.md`` §6.5–6.11).
+Fleet and workforce: vehicles, drivers and their assignments (``erd.md`` §6.5-6.11).
 
 Capacity is **effective-dated** (``vehicle_capacities``) because a trailer change
 or a re-registration changes what a vehicle can legally carry, and route
@@ -107,7 +107,9 @@ class Vehicle(
 
     __tablename__ = "vehicles"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "registration_number", name="uq_vehicles_tenant_registration"),
+        UniqueConstraint(
+            "tenant_id", "registration_number", name="uq_vehicles_tenant_registration"
+        ),
         UniqueConstraint("tenant_id", "fleet_code", name="uq_vehicles_tenant_fleet_code"),
         Index("ix_vehicles_tenant_status", "tenant_id", "status"),
         CheckConstraint("capacity_kg > 0", name="ck_vehicles_capacity"),
@@ -139,11 +141,15 @@ class Vehicle(
     )
     acquisition_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     odometer_km: Mapped[Decimal | None] = mapped_column(Numeric(12, 1), nullable=True)
-    last_maintenance_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_maintenance_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     next_maintenance_due: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     current_latitude: Mapped[Latitude | None] = mapped_column(nullable=True)
     current_longitude: Mapped[Longitude | None] = mapped_column(nullable=True)
-    current_location_updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    current_location_updated_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     has_compactor: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     has_weighbridge: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     telematics_device_id: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -187,7 +193,9 @@ class VehicleTelemetry(Base, TenantScopedMixin):
     __tablename__ = "vehicle_telemetry"
     __table_args__ = (
         UniqueConstraint("vehicle_id", "recorded_at", name="uq_vehicle_telemetry"),
-        Index("ix_vehicle_telemetry_vehicle_time", "tenant_id", "vehicle_id", text("recorded_at DESC")),
+        Index(
+            "ix_vehicle_telemetry_vehicle_time", "tenant_id", "vehicle_id", text("recorded_at DESC")
+        ),
         CheckConstraint(
             "latitude IS NULL OR latitude BETWEEN -90 AND 90",
             name="ck_vehicle_telemetry_latitude",
@@ -246,7 +254,9 @@ class VehicleMaintenance(Base, TenantScopedMixin, TimestampMixin):
         nullable=False,
         server_default=text("now()"),
     )
-    scheduled_for: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scheduled_for: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     odometer_at_service: Mapped[Decimal | None] = mapped_column(Numeric(12, 1), nullable=True)
@@ -351,4 +361,3 @@ class DriverAssignment(Base, TenantScopedMixin, TimestampMixin):
     started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-

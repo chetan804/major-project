@@ -20,7 +20,6 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import Select, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.identity import (
@@ -34,7 +33,7 @@ from app.models.identity import (
     User,
     UserRole,
 )
-from app.repositories.base import BaseRepository, PlatformRepository
+from app.repositories.base import BaseRepository, PaginationResult, PlatformRepository
 
 __all__ = [
     "ApiKeyRepository",
@@ -67,9 +66,7 @@ class UserRepository(BaseRepository[User]):
         return self._base_query().where(User.deleted_at.is_(None))
 
     async def get_active(self, user_id: UUID) -> User | None:
-        result = await self.session.execute(
-            self._visible_query().where(User.id == user_id)
-        )
+        result = await self.session.execute(self._visible_query().where(User.id == user_id))
         return result.scalar_one_or_none()
 
     async def get_by_email(self, email: str) -> User | None:
@@ -94,7 +91,7 @@ class UserRepository(BaseRepository[User]):
         status: str | None = None,
         search: str | None = None,
         role_code: str | None = None,
-    ):
+    ) -> PaginationResult:
         """
         One page of users, with the filters the user-management screen offers.
 
@@ -121,12 +118,12 @@ class UserRepository(BaseRepository[User]):
                 )
             )
         total = int(
-            (await self.session.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+            (
+                await self.session.execute(select(func.count()).select_from(query.subquery()))
+            ).scalar_one()
         )
         query = self._apply_sort(query, sort)
         result = await self.session.execute(query.limit(page_size).offset((page - 1) * page_size))
-        from app.repositories.base import PaginationResult
-
         return PaginationResult(
             list(result.scalars().unique().all()),
             page=page,
@@ -165,9 +162,10 @@ class RoleRepository(BaseRepository[Role]):
     resource_name = "role"
 
     async def get_by_code(self, code: str) -> Role | None:
-        result = await self.session.execute(
-            self._base_query().where(Role.code == code, Role.deleted_at.is_(None))
-        )
+        # ``Role`` carries no soft-delete column: a role is reference-ish
+        # configuration rather than an operational record, so deleting one is a
+        # real delete and there is nothing to filter out here.
+        result = await self.session.execute(self._base_query().where(Role.code == code))
         return result.scalars().unique().one_or_none()
 
     async def permission_codes(self, role_id: UUID) -> frozenset[str]:
@@ -221,12 +219,16 @@ class SessionRepository(BaseRepository[Session]):
         and the legitimate user locked out of the decision.
         """
         sessions = (
-            await self.session.execute(
-                self._base_query().where(
-                    Session.family_id == family_id, Session.revoked_at.is_(None)
+            (
+                await self.session.execute(
+                    self._base_query().where(
+                        Session.family_id == family_id, Session.revoked_at.is_(None)
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         now = _now()
         for session in sessions:
             session.revoked_at = now
@@ -324,9 +326,7 @@ class AuditLogRepository(BaseRepository[AuditLog]):
         action: str | None = None,
         from_time: datetime | None = None,
         to_time: datetime | None = None,
-    ):
-        from app.repositories.base import PaginationResult
-
+    ) -> PaginationResult:
         query = self._base_query()
         if resource_type:
             query = query.where(AuditLog.resource_type == resource_type)
@@ -341,7 +341,9 @@ class AuditLogRepository(BaseRepository[AuditLog]):
         if to_time:
             query = query.where(AuditLog.created_at <= to_time)
         total = int(
-            (await self.session.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+            (
+                await self.session.execute(select(func.count()).select_from(query.subquery()))
+            ).scalar_one()
         )
         query = query.order_by(AuditLog.created_at.desc())
         result = await self.session.execute(query.limit(page_size).offset((page - 1) * page_size))
@@ -370,12 +372,12 @@ class TenantRepository(PlatformRepository[Tenant]):
         )
         return result.scalars().one_or_none()
 
-    async def list_active(self, *, page: int = 1, page_size: int = 100):
-        from app.repositories.base import PaginationResult
-
+    async def list_active(self, *, page: int = 1, page_size: int = 100) -> PaginationResult:
         query = self._base_query().where(Tenant.deleted_at.is_(None))
         total = int(
-            (await self.session.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+            (
+                await self.session.execute(select(func.count()).select_from(query.subquery()))
+            ).scalar_one()
         )
         result = await self.session.execute(
             query.order_by(Tenant.name).limit(page_size).offset((page - 1) * page_size)

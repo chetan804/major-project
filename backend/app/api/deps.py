@@ -9,21 +9,35 @@ resource impossible to substitute in tests.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import datetime
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import Depends, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authorization.context import Actor
+from app.authorization.resolution import resolve_permissions
+from app.authorization.tokens import decode_access_token
 from app.core.cache import Cache, get_cache
 from app.core.config import Settings, get_settings
+from app.core.errors import AuthenticationError, ErrorCode, PermissionDeniedError
+from app.core.logging import get_logger
+from app.db.rls import apply_tenant_context
 from app.db.session import Database, get_database
+from app.models._enums import UserStatus
+from app.models.identity import (
+    Session,
+    User,
+)
 
 __all__ = [
+    "AuthenticatedActor",
     "CacheDep",
     "CurrentActor",
     "DatabaseDep",
-    "RequirePermission",
     "SessionDep",
     "SettingsDep",
     "TenantSessionDep",
@@ -146,87 +160,10 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 # (``rbac.md`` §1). ``tests/architecture/test_route_inventory.py`` fails if a
 # non-public route declares nothing.
 
-from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Annotated
-from uuid import UUID
-
-from fastapi import Depends, Request
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.authorization.context import Actor
-from app.authorization.tokens import decode_access_token
-from app.core.errors import AuthenticationError, ErrorCode, PermissionDeniedError
-from app.core.logging import get_logger
-from app.db.rls import apply_tenant_context
-from app.models._enums import UserStatus
-from app.models.identity import (
-    Permission,
-    Role,
-    RolePermission,
-    Session,
-    User,
-    UserRole,
-)
-
-__all__ = [
-    "CurrentActor",
-    "RequirePermission",
-    "TenantSessionDep",
-    "get_current_actor",
-    "get_tenant_session",
-    "require_authenticated",
-    "require_permission",
-]
-
 logger = get_logger(__name__)
 
 
-async def _resolve_permissions(
-    session: AsyncSession,
-    tenant_id: UUID,
-    user_id: UUID,
-) -> tuple[frozenset[str], frozenset[str]]:
-    """
-    The role codes and permission codes a user holds *in one tenant*.
-
-    Resolved on every request rather than cached: a revoked grant must take effect
-    on the next request, not whenever a cache expires. The whole set arrives in
-    one join over indexed columns, so this is not a scaling problem in practice.
-
-    Expired role grants are excluded here rather than at assignment time, so a
-    time-boxed contractor grant stops working on its own without a job to clean up
-    after it.
-
-    The permission codes are read from the ``permissions`` table rather than taken
-    from the role definition in code, because a tenant may edit its cloned roles:
-    what the user holds is whatever the database says, not what the seed said.
-    """
-    statement = (
-        select(Role.code, Permission.code)
-        .join(UserRole, UserRole.role_id == Role.id)
-        .join(
-            RolePermission,
-            (RolePermission.role_id == Role.id)
-            & (RolePermission.tenant_id == Role.tenant_id),
-        )
-        .join(Permission, Permission.id == RolePermission.permission_id)
-        .where(
-            UserRole.user_id == user_id,
-            UserRole.tenant_id == tenant_id,
-            Role.tenant_id == tenant_id,
-            (UserRole.expires_at.is_(None)) | (UserRole.expires_at > _now()),
-        )
-    )
-    role_codes: set[str] = set()
-    permission_codes: set[str] = set()
-    for role_code, permission_code in (await session.execute(statement)).all():
-        role_codes.add(str(role_code))
-        permission_codes.add(str(permission_code))
-    return frozenset(role_codes), frozenset(permission_codes)
-
-
-def _now():
+def _now() -> datetime:
     from app.core.time import utc_now
 
     return utc_now()
@@ -308,7 +245,7 @@ async def get_current_actor(
             message="This account is temporarily locked.",
         )
 
-    role_codes, permission_codes = await _resolve_permissions(
+    role_codes, permission_codes = await resolve_permissions(
         session, claims.tenant_id, claims.subject
     )
     actor = Actor(
@@ -335,6 +272,16 @@ def _platform_tenant_id() -> UUID:
 async def require_authenticated(actor: Annotated[Actor, Depends(get_current_actor)]) -> Actor:
     """Any authenticated actor, regardless of permissions."""
     return actor
+
+
+# ``require_authenticated`` and ``get_current_actor`` are authentication, not
+# authorization: they prove *who* is calling without asserting what they may do.
+# Marking them lets ``tests/architecture/test_route_inventory.py`` tell a route
+# that is protected by a bearer token from one that is genuinely unprotected,
+# instead of forcing every authenticated route to declare a permission it does not
+# actually need.
+require_authenticated.__ecomind_requires_authentication__ = True  # type: ignore[attr-defined]
+get_current_actor.__ecomind_requires_authentication__ = True  # type: ignore[attr-defined]
 
 
 def require_permission(*codes: str) -> Callable[[Actor], Awaitable[Actor]]:
@@ -395,5 +342,18 @@ async def get_tenant_session(
         await session.rollback()
 
 
+#: The authenticated actor for a request.
+#:
+#: ``Depends`` is explicit rather than a bare callable inside ``Annotated``, and
+#: that is not stylistic. FastAPI treats ``Annotated[Actor, some_callable]`` as a
+#: *request field* annotated with a Pydantic type, not as a dependency: the actor
+#: would then be parsed from the request body and every route would appear to have
+#: no authentication at all. ``tests/architecture/test_route_inventory.py`` fails
+#: the build on exactly that shape, which is how this was caught.
 CurrentActor = Annotated[Actor, Depends(get_current_actor)]
+
+#: An actor that must at least be authenticated, with no permission required.
+AuthenticatedActor = Annotated[Actor, Depends(require_authenticated)]
+
+#: A session whose transaction is already bound to the actor's tenant.
 TenantSessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]

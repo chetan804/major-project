@@ -177,7 +177,9 @@ class User(Base, UUIDPrimaryKeyMixin, TenantScopedMixin, TimestampMixin, SoftDel
         nullable=False,
         server_default=UserStatus.INVITED.value,
     )
-    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_login_ip: Mapped[str | None] = mapped_column(INET, nullable=True)
     failed_login_attempts: Mapped[int] = mapped_column(
@@ -193,6 +195,20 @@ class User(Base, UUIDPrimaryKeyMixin, TenantScopedMixin, TimestampMixin, SoftDel
     )
     preferred_timezone: Mapped[str | None] = mapped_column(Text, nullable=True)
     preferred_locale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    password_reset_token_hash: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        doc=(
+            "SHA-256 of the outstanding password-reset token. The token itself is "
+            "returned to the user once and never stored, so a database disclosure "
+            "yields no usable credential."
+        ),
+    )
+    password_reset_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        doc="When the outstanding reset token stops being accepted.",
+    )
 
     roles: Mapped[list[UserRole]] = relationship(
         back_populates="user",
@@ -213,9 +229,7 @@ class Role(Base, UUIDPrimaryKeyMixin, TenantScopedMixin, TimestampMixin):
     """
 
     __tablename__ = "roles"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "code", name="uq_roles_tenant_code"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_roles_tenant_code"),)
 
     code: Mapped[Code] = mapped_column(nullable=False)
     name: Mapped[ShortText] = mapped_column(nullable=False)
@@ -260,7 +274,9 @@ class Permission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         server_default=PermissionScope.TENANT.value,
     )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_dangerous: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    is_dangerous: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
 
 
 class RolePermission(Base, TenantScopedMixin):
@@ -508,7 +524,9 @@ class TenantSetting(Base, TenantScopedMixin, TimestampMixin):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, server_default=text("gen_random_uuid()"))
     key: Mapped[str] = mapped_column(Text, nullable=False)
-    value: Mapped[dict | list | str | int | float | bool | None] = mapped_column(JSONB, nullable=True)
+    value: Mapped[dict | list | str | int | float | bool | None] = mapped_column(
+        JSONB, nullable=True
+    )
     value_type: Mapped[SettingValueType] = mapped_column(
         pg_enum(SettingValueType, "setting_value_type"),
         nullable=False,

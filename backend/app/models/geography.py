@@ -103,7 +103,9 @@ class ServiceArea(Base, UUIDPrimaryKeyMixin, TenantScopedMixin, TimestampMixin, 
         CheckConstraint("sla_hours IS NULL OR sla_hours > 0", name="ck_service_areas_sla"),
     )
 
-    zone_id: Mapped[UUID] = mapped_column(ForeignKey("zones.id", ondelete="RESTRICT"), nullable=False)
+    zone_id: Mapped[UUID] = mapped_column(
+        ForeignKey("zones.id", ondelete="RESTRICT"), nullable=False
+    )
     code: Mapped[Code] = mapped_column(nullable=False)
     name: Mapped[ShortText] = mapped_column(nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)

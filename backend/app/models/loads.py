@@ -1,5 +1,5 @@
 """
-Waste loads, chain of custody and processing outcomes (``erd.md`` §7.5–7.8).
+Waste loads, chain of custody and processing outcomes (``erd.md`` §7.5-7.8).
 
 This is the traceability spine. A load starts life when a collection produces
 waste, travels to a facility, and ends in one of four outcomes: recovered,
@@ -45,14 +45,16 @@ from app.db.base import (
 from app.db.types import Code, Percentage, VolumeCubicMetres, WeightKg
 from app.models._enums import (
     CompositionSource,
-    ContaminationLevel as ContaminationEnum,
-    ProvenanceKind,
     DisposalType,
     LoadOriginType,
     LoadStatus,
+    ProvenanceKind,
     RecoveryType,
     TreatmentType,
     pg_enum,
+)
+from app.models._enums import (
+    ContaminationLevel as ContaminationEnum,
 )
 
 __all__ = [
@@ -153,7 +155,6 @@ class WasteLoad(Base, UUIDPrimaryKeyMixin, TenantScopedMixin, TimestampMixin, Ve
     )
 
 
-
 class WasteLoadItem(Base, TenantScopedMixin, TimestampMixin):
     """One line of a load's composition."""
 
@@ -229,7 +230,9 @@ class WasteTransfer(Base, TenantScopedMixin, TimestampMixin):
     )
     handover_user_id: Mapped[UUID | None] = mapped_column(nullable=True)
     receiving_user_id: Mapped[UUID | None] = mapped_column(nullable=True)
-    receiving_confirmed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    receiving_confirmed_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     document_file_id: Mapped[UUID | None] = mapped_column(nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -382,4 +385,3 @@ class DisposalEvent(Base, TenantScopedMixin, TimestampMixin, _OutcomeBase):
     )
     landfill_cell: Mapped[str | None] = mapped_column(Text, nullable=True)
     residue_weight_kg: Mapped[WeightKg | None] = mapped_column(nullable=True)
-

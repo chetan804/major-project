@@ -73,7 +73,9 @@ def _define(
 _RAW: tuple[tuple[str, PermissionDefinition], ...] = (
     # -- Identity and access -------------------------------------------------
     _define("users.read", "identity", "List and view tenant users."),
-    _define("users.write", "identity", "Invite, update, activate or suspend users.", is_dangerous=False),
+    _define(
+        "users.write", "identity", "Invite, update, activate or suspend users.", is_dangerous=False
+    ),
     _define("users.delete", "identity", "Soft-delete a user.", is_dangerous=True),
     _define("roles.read", "identity", "List roles and their permissions."),
     _define("roles.write", "identity", "Create, clone or rename tenant roles."),
@@ -118,7 +120,9 @@ _RAW: tuple[tuple[str, PermissionDefinition], ...] = (
     _define("bins.write", "bins", "Create or update bins."),
     _define("bins.delete", "bins", "Decommission a bin (soft delete)."),
     _define("bins.telemetry.read", "bins", "Read raw telemetry history for a bin."),
-    _define("bins.telemetry.read.own", "bins", "Read telemetry for bins the caller is responsible for."),
+    _define(
+        "bins.telemetry.read.own", "bins", "Read telemetry for bins the caller is responsible for."
+    ),
     _define(
         "bins.telemetry.ingest",
         "bins",
@@ -171,7 +175,11 @@ _RAW: tuple[tuple[str, PermissionDefinition], ...] = (
     _define("loads.update", "facilities", "Update a waste load."),
     _define("loads.transfer", "facilities", "Record a custody handoff."),
     _define("loads.composition.write", "facilities", "Enter composition analysis for a load."),
-    _define("recovery.record", "facilities", "Record a recovery, composting, treatment or disposal outcome."),
+    _define(
+        "recovery.record",
+        "facilities",
+        "Record a recovery, composting, treatment or disposal outcome.",
+    ),
     _define("weighbridge.record", "facilities", "Record a measured weighbridge weight."),
     # -- Analytics, AI, reporting -------------------------------------------
     _define("analytics.read", "analytics", "Read analytics endpoints and dashboards."),
@@ -183,7 +191,11 @@ _RAW: tuple[tuple[str, PermissionDefinition], ...] = (
     _define("forecasts.read", "analytics", "Read forecast results including uncertainty."),
     _define("forecasts.execute", "analytics", "Trigger a forecast run (a job)."),
     _define("anomalies.read", "analytics", "View detected anomalies."),
-    _define("anomalies.manage", "analytics", "Triage anomalies (acknowledge, resolve, mark false positive)."),
+    _define(
+        "anomalies.manage",
+        "analytics",
+        "Triage anomalies (acknowledge, resolve, mark false positive).",
+    ),
     _define("classification.execute", "ai", "Submit an image for waste classification."),
     _define("classification.review", "ai", "Verify or correct a classification."),
     _define("models.read", "ai", "View the model registry and published metrics."),
@@ -218,12 +230,26 @@ _RAW: tuple[tuple[str, PermissionDefinition], ...] = (
         scope=PermissionScope.PLATFORM,
     ),
     _define("integrations.read", "governance", "View integrations and webhooks."),
-    _define("integrations.write", "governance", "Configure integrations and webhooks.", is_dangerous=True),
+    _define(
+        "integrations.write",
+        "governance",
+        "Configure integrations and webhooks.",
+        is_dangerous=True,
+    ),
     _define("files.upload", "governance", "Upload a file."),
     _define("files.read.own", "governance", "Read a file the caller uploaded."),
-    _define("data.export", "governance", "Bulk data export. Rate-limited and audited.", is_dangerous=True),
-    _define("data.import", "governance", "CSV import. Validated and all-or-nothing in its reporting."),
-    _define("retention.configure", "governance", "Change a data retention policy.", is_dangerous=True),
+    _define(
+        "data.export",
+        "governance",
+        "Bulk data export. Rate-limited and audited.",
+        is_dangerous=True,
+    ),
+    _define(
+        "data.import", "governance", "CSV import. Validated and all-or-nothing in its reporting."
+    ),
+    _define(
+        "retention.configure", "governance", "Change a data retention policy.", is_dangerous=True
+    ),
     # -- Platform (SUPER_ADMIN only) ----------------------------------------
     _define(
         "platform.tenants.read",

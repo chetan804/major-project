@@ -167,8 +167,12 @@ class Bin(
     latitude: Mapped[Latitude] = mapped_column(nullable=False)
     longitude: Mapped[Longitude] = mapped_column(nullable=False)
     installation_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    last_collection_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_telemetry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_collection_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_telemetry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     is_sensorized: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     is_public_facing: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     access_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -225,7 +229,9 @@ class BinSensor(Base, UUIDPrimaryKeyMixin, TenantScopedMixin, TimestampMixin, So
     )
     calibration_offset: Mapped[Decimal | None] = mapped_column(Numeric(6, 2), nullable=True)
     calibration_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    battery_reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    battery_reported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="ACTIVE")
 
@@ -359,9 +365,7 @@ class BinTelemetryLatest(Base, TenantScopedMixin):
     """
 
     __tablename__ = "bin_telemetry_latest"
-    __table_args__ = (
-        Index("ix_bin_telemetry_latest_overflow", "tenant_id", "is_overflow_risk"),
-    )
+    __table_args__ = (Index("ix_bin_telemetry_latest_overflow", "tenant_id", "is_overflow_risk"),)
 
     bin_id: Mapped[UUID] = mapped_column(
         ForeignKey("bins.id", ondelete="CASCADE"),
@@ -473,4 +477,3 @@ class BinMaintenance(Base, TenantScopedMixin, TimestampMixin):
     cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     parts_replaced: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-

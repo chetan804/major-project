@@ -1,5 +1,5 @@
 """
-Facilities and their capabilities (``erd.md`` §7.1–7.4).
+Facilities and their capabilities (``erd.md`` §7.1-7.4).
 
 ``facility_capabilities`` is what makes BR-10 enforceable: a waste load may only
 be sent to a facility that has declared it can accept that category. The check
@@ -18,7 +18,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Date,
-    DateTime,
     ForeignKey,
     Index,
     Numeric,
@@ -127,7 +126,9 @@ class Facility(
     contact_email: Mapped[str | None] = mapped_column(Text, nullable=True)
     permit_number: Mapped[str | None] = mapped_column(Text, nullable=True)
     permit_expiry: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
-    weighbridge_available: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    weighbridge_available: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     acceptance_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 

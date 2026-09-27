@@ -17,7 +17,6 @@ jobs safe to rerun without a distributed lock.
 from __future__ import annotations
 
 import datetime as dt
-from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -139,7 +138,9 @@ class Notification(Base, TenantScopedMixin, TimestampMixin):
     dedup_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     read_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    delivery_attempts: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default=text("0"))
+    delivery_attempts: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, server_default=text("0")
+    )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -357,7 +358,9 @@ class Integration(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         server_default=text("'{}'::jsonb"),
     )
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
-    last_health_check_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_health_check_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_health_status: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="ACTIVE")
 
@@ -382,8 +385,12 @@ class Webhook(Base, TenantScopedMixin, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     failure_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
-    last_success_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_failure_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_failure_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     disabled_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[UUID | None] = mapped_column(nullable=True)
 
@@ -419,7 +426,9 @@ class WebhookDelivery(Base, TenantScopedMixin, TimestampMixin):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     response_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     response_body_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    next_retry_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_retry_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     delivered_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -537,8 +546,12 @@ class DataRetentionPolicy(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         doc="BIN_TELEMETRY, VEHICLE_TELEMETRY, AUDIT_LOG, NOTIFICATION, JOB_RUN, …",
     )
     retention_days: Mapped[int] = mapped_column(Integer, nullable=False)
-    archive_before_delete: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
-    last_enforced_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archive_before_delete: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true"
+    )
+    last_enforced_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -554,7 +567,9 @@ class AssistantConversation(Base, TenantScopedMixin, TimestampMixin):
         nullable=False,
     )
     title: Mapped[ShortText | None] = mapped_column(nullable=True)
-    last_message_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_message_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class AssistantMessage(Base, TenantScopedMixin, TimestampMixin):
@@ -595,4 +610,3 @@ class AssistantMessage(Base, TenantScopedMixin, TimestampMixin):
     provider: Mapped[str | None] = mapped_column(Text, nullable=True)
     model_version_id: Mapped[UUID | None] = mapped_column(nullable=True)
     token_usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-

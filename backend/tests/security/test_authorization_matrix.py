@@ -142,9 +142,7 @@ def test_family_matches_the_document(family: str, marks: tuple[str, ...]) -> Non
                 own = f"{code}.own"
                 if own in PERMISSIONS:
                     assert own in granted, f"{role} must hold {own} ({family}, own scope)"
-                assert code not in granted, (
-                    f"{role} holds {code} but {family} is own-scope only"
-                )
+                assert code not in granted, f"{role} holds {code} but {family} is own-scope only"
         else:
             assert mark == "\u2013", f"unexpected mark {mark!r} for {family}"
             for code in codes:
@@ -237,7 +235,28 @@ def test_driver_sees_only_own_records() -> None:
 def test_viewer_is_read_only() -> None:
     """``rbac.md`` §4.1: read-only means read-only, including no export."""
     viewer = ROLE_PERMISSION_MAP["VIEWER"]
-    for write_code in sorted(code for code in PERMISSIONS if code.endswith((".write", ".create", ".delete", ".ingest", ".optimize", ".act", ".manage", ".configure", ".export", ".import", ".assign", ".dispatch", ".record", ".complete.own"))):
+    for write_code in sorted(
+        code
+        for code in PERMISSIONS
+        if code.endswith(
+            (
+                ".write",
+                ".create",
+                ".delete",
+                ".ingest",
+                ".optimize",
+                ".act",
+                ".manage",
+                ".configure",
+                ".export",
+                ".import",
+                ".assign",
+                ".dispatch",
+                ".record",
+                ".complete.own",
+            )
+        )
+    ):
         assert write_code not in viewer, f"VIEWER holds {write_code}"
     assert "analytics.export" not in viewer
     assert "data.export" not in viewer

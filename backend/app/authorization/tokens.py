@@ -40,8 +40,8 @@ __all__ = [
     "tokens_match",
 ]
 
-ACCESS_TOKEN_TYPE = "access"
-REFRESH_TOKEN_TYPE = "refresh"
+ACCESS_TOKEN_TYPE = "access"  # noqa: S105 - a token-type label, not a credential
+REFRESH_TOKEN_TYPE = "refresh"  # noqa: S105 - a token-type label, not a credential
 
 
 class TokenClaims:
@@ -199,7 +199,8 @@ def decode_access_token(
             message="Access token is not valid.",
         ) from exc
 
-    from datetime import UTC, datetime as _datetime
+    from datetime import UTC
+    from datetime import datetime as _datetime
 
     return TokenClaims(
         subject=subject,

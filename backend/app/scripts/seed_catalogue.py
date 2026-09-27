@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import column, table, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -319,7 +319,9 @@ def seed_reference_data(connection: Any) -> dict[str, int]:
     )
     version_rows = [
         {
-            "id": str(deterministic_id("ai_model_version", str(model["code"]), str(version["version"]))),
+            "id": str(
+                deterministic_id("ai_model_version", str(model["code"]), str(version["version"]))
+            ),
             "model_id": str(deterministic_id("ai_model", str(model["code"]))),
             # Seeded as CANDIDATE: a version becomes ACTIVE only through an
             # evaluation run that records real metrics against a named dataset.
@@ -333,7 +335,7 @@ def seed_reference_data(connection: Any) -> dict[str, int]:
             "notes": version.get("notes"),
         }
         for model in AI_MODELS
-        for version in model["versions"]  # type: ignore[union-attr]
+        for version in cast("tuple[dict[str, object], ...]", model["versions"])
     ]
     counts["ai_model_versions"] = _upsert(connection, versions, version_rows)
 
@@ -501,4 +503,3 @@ SELECT d.id, d.tenant_id, d.waste_load_id, d.facility_id, d.waste_category_id,
 def create_processing_outcomes_view(connection: Any) -> None:
     """Create (or replace) the unified processing-outcome view."""
     connection.execute(text(PROCESSING_OUTCOMES_VIEW))
-

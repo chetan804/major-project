@@ -753,6 +753,8 @@ def upgrade() -> None:
     sa.Column('mfa_secret_encrypted', sa.Text(), nullable=True),
     sa.Column('preferred_timezone', sa.Text(), nullable=True),
     sa.Column('preferred_locale', sa.Text(), nullable=True),
+    sa.Column('password_reset_token_hash', sa.Text(), nullable=True),
+    sa.Column('password_reset_expires_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('id', sa.UUID(), server_default=sa.text('gen_random_uuid()'), nullable=False),
     sa.Column('tenant_id', sa.UUID(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),

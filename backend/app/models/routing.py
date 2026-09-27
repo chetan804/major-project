@@ -32,8 +32,9 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.db.base import (
     AuditActorMixin,
     Base,
@@ -110,10 +111,18 @@ class Route(
         nullable=False,
         server_default=RouteStatus.DRAFT.value,
     )
-    planned_start_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    planned_end_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    actual_start_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    actual_end_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    planned_start_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    planned_end_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    actual_start_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    actual_end_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     planned_distance_km: Mapped[DistanceKm | None] = mapped_column(nullable=True)
     actual_distance_km: Mapped[DistanceKm | None] = mapped_column(nullable=True)
     planned_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -121,7 +130,9 @@ class Route(
     planned_load_kg: Mapped[WeightKg | None] = mapped_column(nullable=True)
     actual_load_kg: Mapped[WeightKg | None] = mapped_column(nullable=True)
     stop_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
-    completed_stop_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    completed_stop_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
     optimization_run_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("route_optimization_runs.id", ondelete="SET NULL"),
         nullable=True,
@@ -139,7 +150,6 @@ class Route(
         back_populates="route",
         cascade="all, delete-orphan",
     )
-
 
 
 class RouteStop(Base, TenantScopedMixin, TimestampMixin):
@@ -182,12 +192,20 @@ class RouteStop(Base, TenantScopedMixin, TimestampMixin):
     )
     latitude: Mapped[Latitude | None] = mapped_column(nullable=True)
     longitude: Mapped[Longitude | None] = mapped_column(nullable=True)
-    planned_arrival_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    planned_departure_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    planned_arrival_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    planned_departure_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     service_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     estimated_quantity_kg: Mapped[WeightKg | None] = mapped_column(nullable=True)
-    actual_arrival_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    actual_departure_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    actual_arrival_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    actual_departure_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     status: Mapped[StopStatus] = mapped_column(
         pg_enum(StopStatus, "stop_status"),
         nullable=False,
@@ -247,7 +265,9 @@ class RouteOptimizationRun(Base, TenantScopedMixin, TimestampMixin):
     total_distance_km: Mapped[Decimal | None] = mapped_column(Numeric(12, 3), nullable=True)
     total_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     vehicles_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    unassigned_stop_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    unassigned_stop_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
     unassigned_reasons: Mapped[dict[str, Any] | None] = mapped_column(
         JSONB,
         nullable=True,
@@ -303,7 +323,9 @@ class RouteAssignment(Base, TenantScopedMixin, TimestampMixin):
         nullable=False,
         server_default=text("now()"),
     )
-    unassigned_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    unassigned_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
 
@@ -352,4 +374,3 @@ class RouteComparison(Base, TenantScopedMixin, TimestampMixin):
         nullable=False,
         server_default=text("now()"),
     )
-

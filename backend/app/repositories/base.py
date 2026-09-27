@@ -17,7 +17,7 @@ repository with the filter switched off.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 from uuid import UUID
 
 from sqlalchemy import Select, func, select
@@ -26,9 +26,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import InputValidationError, NotFoundError
 from app.db.base import Base
 
-__all__ = ["BaseRepository", "PlatformRepository", "PaginationResult"]
+__all__ = ["BaseRepository", "PaginationResult", "PlatformRepository"]
 
+#: The entity a repository is responsible for.
+#:
+#: Bounded to ``Base`` so a repository cannot be instantiated for something that
+#: is not a mapped table. The bound deliberately stops there: the *columns* are
+#: not part of it, because an ORM column is runtime metadata produced by the
+#: mapper (``User.email`` is an ``InstrumentedAttribute``), not a class attribute
+#: a type checker can see. Declaring ``model`` as ``Any`` below keeps that single
+#: fact in one documented place instead of scattering ``# type: ignore`` across
+#: every query in this module -- while ``ModelT`` still makes every *return* type
+#: precise, which is what callers actually depend on.
 ModelT = TypeVar("ModelT", bound=Base)
+
 
 #: The columns every list endpoint may sort by, unless a repository narrows them.
 #: Sorting is allow-listed rather than accepted from the client: an arbitrary
@@ -56,7 +67,7 @@ class PaginationResult(Sequence[Any]):
         self.page_size = page_size
         self.total = total
 
-    def __getitem__(self, index: Any) -> Any:  # type: ignore[override]
+    def __getitem__(self, index: Any) -> Any:
         return self.items[index]
 
     def __len__(self) -> int:
@@ -79,7 +90,7 @@ class BaseRepository(Generic[ModelT]):
     identical across every endpoint in the API.
     """
 
-    model: type[ModelT]
+    model: Any
 
     #: Relationships loaded eagerly. Empty by default: loading a relationship the
     #: caller does not need is a query that runs on every request.
@@ -98,7 +109,7 @@ class BaseRepository(Generic[ModelT]):
     # -- query construction --------------------------------------------------
     def _base_query(self) -> Select:
         """A ``SELECT`` constrained to this repository's tenant."""
-        query = select(self.model).where(self.model.tenant_id == self.tenant_id)  # type: ignore[attr-defined]
+        query = select(self.model).where(self.model.tenant_id == self.tenant_id)
         for loader in self.selectin_loads:
             query = query.options(loader)
         return query
@@ -109,9 +120,7 @@ class BaseRepository(Generic[ModelT]):
     # -- reads ---------------------------------------------------------------
     async def get(self, entity_id: UUID) -> ModelT | None:
         """One row, or ``None``. Never raises for "not visible to this tenant"."""
-        result = await self.session.execute(
-            self._base_query().where(self.model.id == entity_id)  # type: ignore[attr-defined]
-        )
+        result = await self.session.execute(self._base_query().where(self.model.id == entity_id))
         return result.scalar_one_or_none()
 
     async def get_or_404(self, entity_id: UUID) -> ModelT:
@@ -132,8 +141,10 @@ class BaseRepository(Generic[ModelT]):
         return (await self.get(entity_id)) is not None
 
     async def count(self, filters: Mapping[str, Any] | None = None) -> int:
-        query = select(func.count()).select_from(self.model).where(
-            self.model.tenant_id == self.tenant_id  # type: ignore[attr-defined]
+        query = (
+            select(func.count())
+            .select_from(self.model)
+            .where(self.model.tenant_id == self.tenant_id)
         )
         query = self._apply_filters(query, filters)
         return int((await self.session.execute(query)).scalar_one())
@@ -166,9 +177,7 @@ class BaseRepository(Generic[ModelT]):
         query = self._apply_sort(query, sort)
 
         total = await self.count(filters)
-        result = await self.session.execute(
-            query.limit(page_size).offset((page - 1) * page_size)
-        )
+        result = await self.session.execute(query.limit(page_size).offset((page - 1) * page_size))
         return PaginationResult(
             list(result.scalars().unique().all()),
             page=page,
@@ -213,9 +222,7 @@ class BaseRepository(Generic[ModelT]):
             if value is None:
                 continue
             if not hasattr(self.model, field):
-                raise InputValidationError(
-                    message=f"Cannot filter by {field!r}.", field=field
-                )
+                raise InputValidationError(message=f"Cannot filter by {field!r}.", field=field)
             query = query.where(getattr(self.model, field) == value)
         return query
 
@@ -229,7 +236,7 @@ class BaseRepository(Generic[ModelT]):
         repository simply ignores the value and uses its own.
         """
         values.pop("tenant_id", None)
-        entity = self.model(tenant_id=self.tenant_id, **values)  # type: ignore[call-arg]
+        entity = cast(ModelT, self.model(tenant_id=self.tenant_id, **values))
         self.session.add(entity)
         await self.session.flush()
         return entity
@@ -266,7 +273,7 @@ class BaseRepository(Generic[ModelT]):
         if hasattr(entity, "deleted_at"):
             from app.core.time import utc_now
 
-            entity.deleted_at = utc_now()  # type: ignore[attr-defined]
+            entity.deleted_at = utc_now()
             await self.session.flush()
             return
         await self.session.delete(entity)
@@ -286,7 +293,7 @@ class PlatformRepository(Generic[ModelT]):
     it should have to be chosen explicitly by naming this class.
     """
 
-    model: type[ModelT]
+    model: Any
     selectin_loads: tuple[Any, ...] = ()
     sortable_fields: tuple[str, ...] = DEFAULT_SORT_FIELDS
     resource_name: str = ""
@@ -304,9 +311,7 @@ class PlatformRepository(Generic[ModelT]):
         return self.resource_name or self.model.__tablename__
 
     async def get(self, entity_id: UUID) -> ModelT | None:
-        result = await self.session.execute(
-            self._base_query().where(self.model.id == entity_id)  # type: ignore[attr-defined]
-        )
+        result = await self.session.execute(self._base_query().where(self.model.id == entity_id))
         return result.scalar_one_or_none()
 
     async def get_or_404(self, entity_id: UUID) -> ModelT:
@@ -316,9 +321,7 @@ class PlatformRepository(Generic[ModelT]):
         return entity
 
     async def get_by_code(self, code: str) -> ModelT | None:
-        result = await self.session.execute(
-            self._base_query().where(self.model.code == code)  # type: ignore[attr-defined]
-        )
+        result = await self.session.execute(self._base_query().where(self.model.code == code))
         return result.scalar_one_or_none()
 
     async def list(self, *, page: int = 1, page_size: int = 25) -> PaginationResult:
