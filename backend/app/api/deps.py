@@ -19,7 +19,20 @@ from app.core.cache import Cache, get_cache
 from app.core.config import Settings, get_settings
 from app.db.session import Database, get_database
 
-__all__ = ["CacheDep", "DatabaseDep", "SessionDep", "SettingsDep", "get_session"]
+__all__ = [
+    "CacheDep",
+    "CurrentActor",
+    "DatabaseDep",
+    "RequirePermission",
+    "SessionDep",
+    "SettingsDep",
+    "TenantSessionDep",
+    "get_current_actor",
+    "get_session",
+    "get_tenant_session",
+    "require_authenticated",
+    "require_permission",
+]
 
 
 def get_settings_dep(request: Request) -> Settings:
@@ -101,3 +114,286 @@ SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 DatabaseDep = Annotated[Database, Depends(get_database_dep)]
 CacheDep = Annotated[Cache, Depends(get_cache_dep)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+
+# ---------------------------------------------------------------------------
+# Authentication and tenant binding
+# ---------------------------------------------------------------------------
+# These live in the API layer rather than in ``app.authorization`` because they
+# are HTTP concerns: they read headers, they are resolved by FastAPI's dependency
+# system, and they would otherwise force the authorization layer (which sits
+# *below* services in the dependency order enforced by
+# ``tests/architecture/test_import_rules.py``) to import from the API layer above
+# it. The authorization rules themselves stay in ``app.authorization``; only the
+# plumbing that hands them to a request lives here.
+#
+# The chain for a protected route is:
+#
+# ``get_current_actor``
+#     reads the ``Authorization`` header, verifies the token, loads the live
+#     session, resolves the user's roles and permissions, and returns an
+#     :class:`~app.authorization.context.Actor`;
+# ``require_permission(...)``
+#     a dependency factory that denies the request unless the actor holds every
+#     listed code;
+# ``get_tenant_session``
+#     a session whose transaction is bound to the actor's tenant, so PostgreSQL
+#     row-level security is the last line of defence rather than the only one.
+#
+# Routes declare the permissions they need as a dependency rather than checking a
+# role: a role is a tenant-editable bundle, so a check written against a role name
+# stops working the first time an administrator reorganises their roles
+# (``rbac.md`` §1). ``tests/architecture/test_route_inventory.py`` fails if a
+# non-public route declares nothing.
+
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import Depends, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.authorization.context import Actor
+from app.authorization.tokens import decode_access_token
+from app.core.errors import AuthenticationError, ErrorCode, PermissionDeniedError
+from app.core.logging import get_logger
+from app.db.rls import apply_tenant_context
+from app.models._enums import UserStatus
+from app.models.identity import (
+    Permission,
+    Role,
+    RolePermission,
+    Session,
+    User,
+    UserRole,
+)
+
+__all__ = [
+    "CurrentActor",
+    "RequirePermission",
+    "TenantSessionDep",
+    "get_current_actor",
+    "get_tenant_session",
+    "require_authenticated",
+    "require_permission",
+]
+
+logger = get_logger(__name__)
+
+
+async def _resolve_permissions(
+    session: AsyncSession,
+    tenant_id: UUID,
+    user_id: UUID,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """
+    The role codes and permission codes a user holds *in one tenant*.
+
+    Resolved on every request rather than cached: a revoked grant must take effect
+    on the next request, not whenever a cache expires. The whole set arrives in
+    one join over indexed columns, so this is not a scaling problem in practice.
+
+    Expired role grants are excluded here rather than at assignment time, so a
+    time-boxed contractor grant stops working on its own without a job to clean up
+    after it.
+
+    The permission codes are read from the ``permissions`` table rather than taken
+    from the role definition in code, because a tenant may edit its cloned roles:
+    what the user holds is whatever the database says, not what the seed said.
+    """
+    statement = (
+        select(Role.code, Permission.code)
+        .join(UserRole, UserRole.role_id == Role.id)
+        .join(
+            RolePermission,
+            (RolePermission.role_id == Role.id)
+            & (RolePermission.tenant_id == Role.tenant_id),
+        )
+        .join(Permission, Permission.id == RolePermission.permission_id)
+        .where(
+            UserRole.user_id == user_id,
+            UserRole.tenant_id == tenant_id,
+            Role.tenant_id == tenant_id,
+            (UserRole.expires_at.is_(None)) | (UserRole.expires_at > _now()),
+        )
+    )
+    role_codes: set[str] = set()
+    permission_codes: set[str] = set()
+    for role_code, permission_code in (await session.execute(statement)).all():
+        role_codes.add(str(role_code))
+        permission_codes.add(str(permission_code))
+    return frozenset(role_codes), frozenset(permission_codes)
+
+
+def _now():
+    from app.core.time import utc_now
+
+    return utc_now()
+
+
+async def get_current_actor(
+    request: Request,
+    settings: SettingsDep,
+    session: SessionDep,
+) -> Actor:
+    """
+    Authenticate the request from its bearer token.
+
+    The token is verified without touching the database, but the *session* it
+    names is checked live, which is what makes revocation immediate: a signed
+    token is not enough on its own.
+
+    Failure messages are deliberately uniform for "no token", "bad token" and
+    "unknown user". Distinguishing them would tell an attacker whether an email
+    address exists.
+    """
+    header = request.headers.get("Authorization")
+    if not header:
+        raise AuthenticationError(
+            code=ErrorCode.AUTHENTICATION_REQUIRED,
+            message="Authentication required.",
+        )
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise AuthenticationError(
+            code=ErrorCode.AUTHENTICATION_REQUIRED,
+            message="Authentication required.",
+        )
+
+    claims = decode_access_token(
+        token.strip(),
+        secret_key=settings.jwt_secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+
+    if claims.session_id is None:
+        raise AuthenticationError(
+            code=ErrorCode.TOKEN_INVALID,
+            message="Access token is not valid.",
+        )
+
+    live_session = (
+        await session.execute(select(Session).where(Session.id == claims.session_id))
+    ).scalar_one_or_none()
+    if live_session is None or live_session.revoked_at is not None:
+        raise AuthenticationError(
+            code=ErrorCode.SESSION_REVOKED,
+            message="Session is no longer valid. Sign in again.",
+        )
+    if live_session.expires_at <= _now():
+        raise AuthenticationError(
+            code=ErrorCode.SESSION_REVOKED,
+            message="Session has expired. Sign in again.",
+        )
+
+    user = (
+        await session.execute(select(User).where(User.id == claims.subject))
+    ).scalar_one_or_none()
+    if user is None:
+        raise AuthenticationError(
+            code=ErrorCode.AUTHENTICATION_REQUIRED,
+            message="Authentication required.",
+        )
+    if user.status is not UserStatus.ACTIVE:
+        raise AuthenticationError(
+            code=ErrorCode.ACCOUNT_SUSPENDED
+            if user.status is UserStatus.SUSPENDED
+            else ErrorCode.ACCOUNT_LOCKED,
+            message="This account cannot sign in.",
+        )
+    if user.locked_until is not None and user.locked_until > _now():
+        raise AuthenticationError(
+            code=ErrorCode.ACCOUNT_LOCKED,
+            message="This account is temporarily locked.",
+        )
+
+    role_codes, permission_codes = await _resolve_permissions(
+        session, claims.tenant_id, claims.subject
+    )
+    actor = Actor(
+        user_id=user.id,
+        tenant_id=claims.tenant_id,
+        email=user.email,
+        full_name=user.full_name,
+        permissions=permission_codes,
+        roles=role_codes,
+        session_id=live_session.id,
+        auth_type="USER",
+        is_platform_operator=claims.tenant_id == _platform_tenant_id(),
+    )
+    request.state.actor = actor
+    return actor
+
+
+def _platform_tenant_id() -> UUID:
+    from app.db.base import PLATFORM_SCOPE_ID
+
+    return PLATFORM_SCOPE_ID
+
+
+async def require_authenticated(actor: Annotated[Actor, Depends(get_current_actor)]) -> Actor:
+    """Any authenticated actor, regardless of permissions."""
+    return actor
+
+
+def require_permission(*codes: str) -> Callable[[Actor], Awaitable[Actor]]:
+    """
+    A dependency that denies the request unless every code in ``codes`` is held.
+
+    Returned as a callable so a route can declare exactly what it needs in one
+    line, and so the declared set is readable in the route signature — which is
+    what ``tests/architecture/test_route_inventory.py`` inspects.
+
+    All codes are required, not any of them: a route that accepts several codes
+    is usually two routes that were merged, and merging them makes the permission
+    model impossible to reason about.
+    """
+
+    async def _dependency(actor: Annotated[Actor, Depends(get_current_actor)]) -> Actor:
+        missing = [code for code in codes if not actor.has_permission(code)]
+        if missing:
+            logger.info(
+                "authorization denied",
+                user_id=str(actor.user_id),
+                tenant_id=str(actor.tenant_id),
+                missing=missing,
+            )
+            raise PermissionDeniedError(
+                message="You do not have permission to perform this action.",
+                required_permissions=list(codes),
+            )
+        return actor
+
+    # The declared set is attached to the dependency object rather than inferred
+    # from the closure. ``tests/architecture/test_route_inventory.py`` reads it to
+    # prove that no mounted operation is unprotected, and a closure is opaque to
+    # that check — the endpoint would look unclassified and fail the build.
+    _dependency.__ecomind_permissions__ = list(codes)  # type: ignore[attr-defined]
+    return _dependency
+
+
+async def get_tenant_session(
+    actor: Annotated[Actor, Depends(get_current_actor)],
+    session: SessionDep,
+) -> AsyncIterator[AsyncSession]:
+    """
+    A session whose transaction is bound to the actor's tenant.
+
+    Binding the tenant is what activates the row-level security policies: without
+    it, every tenant-scoped table would return zero rows (the policy fails
+    closed), which is a safe failure but a broken one. With it, a repository that
+    forgets its ``WHERE tenant_id = ...`` is still confined by the database.
+
+    The binding is transaction-local (``set_config(..., true)``), so it cannot
+    leak into the next request that reuses the pooled connection.
+    """
+    await apply_tenant_context(session, actor.tenant_id)
+    try:
+        yield session
+    finally:
+        await session.rollback()
+
+
+CurrentActor = Annotated[Actor, Depends(get_current_actor)]
+TenantSessionDep = Annotated[AsyncSession, Depends(get_tenant_session)]

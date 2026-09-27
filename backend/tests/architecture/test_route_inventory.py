@@ -132,19 +132,53 @@ def _iter_api_routes(app) -> Iterator[_Surface]:
     yield from walk(app)
 
 
+#: The attribute ``app.authorization.dependencies.require_permission`` attaches to
+#: the dependency it returns. Read here rather than reached for through the
+#: closure, which is opaque.
+PERMISSION_MARKER = "__ecomind_permissions__"
+
+
+def _collect_from_dependant(dependant, found: list[str]) -> None:
+    """
+    Walk a FastAPI dependant tree collecting every declared permission.
+
+    The tree is walked rather than read at the top level because a route's
+    permissions are usually declared in its *signature* (``actor: RequirePermission
+    = ...``), which FastAPI resolves into a sub-dependant of the route. Reading
+    only the route's own ``dependencies`` list would miss every one of them and
+    the gate would pass vacuously — the exact failure this module exists to
+    prevent.
+    """
+    call = getattr(dependant, "call", None)
+    if call is not None:
+        declared = getattr(call, PERMISSION_MARKER, None)
+        if declared:
+            found.extend(declared)
+    for sub in getattr(dependant, "dependencies", ()) or ():
+        _collect_from_dependant(sub, found)
+
+
 def _declared_permissions(surface: _Surface) -> list[str]:
     """
     Read the permissions an operation declares.
 
-    Phase 1 has no protected routes, so this returns an empty list. Phase 2 reads
-    ``surface.dependencies`` (and later the route's inferred dependant) to recover
-    the required permission set, at which point every non-public operation must
-    return a non-empty list or fail the inventory test.
-
-    Kept as a function with this exact purpose so the gate has one obvious place to
-    change, rather than a comment asking a future contributor to remember.
+    Both sources are consulted: the router- or route-level ``dependencies`` list,
+    and the resolved dependant tree behind the operation. An operation that
+    declares nothing returns an empty list and fails
+    :func:`test_every_route_is_classified`.
     """
-    return []
+    found: list[str] = []
+    for dependency in surface.dependencies:
+        _collect_from_dependant(dependency, found)
+    _collect_from_dependant(getattr(surface.route, "dependant", None), found)
+    # Deduplicated but order-preserving: the order is the one the author wrote.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for code in found:
+        if code not in seen:
+            seen.add(code)
+            unique.append(code)
+    return unique
 
 
 #: A traversal that silently finds nothing would make every assertion below pass

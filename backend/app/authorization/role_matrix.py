@@ -1,13 +1,33 @@
 """
-The seeded role → permission matrix (``rbac.md`` §4).
+The seeded role to permission matrix (``rbac.md`` §4).
 
 The matrix is *data*, not code paths: authorization always checks a permission
 string, so a tenant may clone a system role, rename it, or build an entirely new
 one without any change here. What this module provides is the **starting point**
 every tenant is provisioned with.
 
-``tests/test_authorization_matrix.py`` asserts that this table and
-``docs/security/rbac.md`` §4 say the same thing, so neither can drift.
+How the matrix is stored, and why it is stored this way
+------------------------------------------------------
+``rbac.md`` is the source of truth for who may do what, and it is a table. This
+module holds that same table as two literal structures -- the permission
+*families* the document names, and the *grant mark* for each role and family --
+and derives the resolved permission sets from them. An earlier revision spelled
+each role's permissions out as a hand-written frozenset; it drifted from the
+document in twenty-one places, which is twenty-one silent authorisation
+decisions that no test could see. Deriving the sets from one table means there is
+exactly one place where a grant can be changed, and
+``tests/security/test_authorization_matrix.py`` compares it against the document
+row by row, so drift becomes a failing test instead of a security incident.
+
+Three marks exist, mirroring the document's legend:
+
+``FULL``
+    every code in the family is granted;
+``OWN``
+    only the ``.own`` variant is granted -- the actor may act on records they
+    are assigned to, not on the tenant's records as a whole;
+``NONE``
+    nothing in the family is granted.
 
 Two deliberate omissions, called out because they look like mistakes:
 
@@ -22,15 +42,21 @@ Two deliberate omissions, called out because they look like mistakes:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from app.authorization.permissions import PERMISSIONS
 
 __all__ = [
+    "GRANTS",
     "ROLE_DEFINITIONS",
     "ROLE_PERMISSION_MAP",
     "RoleDefinition",
     "permissions_for_role",
 ]
+
+#: How much of a permission family a role receives. The values are the
+#: document's legend rendered as symbols.
+Grant = Literal["FULL", "OWN", "NONE"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,423 +71,350 @@ class RoleDefinition:
     permissions: frozenset[str] = field(default_factory=frozenset)
 
 
-#: Permission groups referenced by more than one role. Naming them keeps the
-#: matrix below readable and makes a change in one place rather than ten.
-_VIEW_OPS = frozenset(
-    {
-        "settings.read",
-        "bins.read",
-        "bins.telemetry.read.own",
-        "alerts.read.own",
-        "scoring.read",
-        "collections.read.own",
-        "routes.read.own",
-        "vehicles.read.own",
-        "loads.read.own",
-        "facilities.read",
-        "analytics.read",
-        "forecasts.read",
-        "anomalies.read",
-        "emission_factors.read",
-        "recommendations.read",
-        "assistant.use",
-        "reports.read",
-        "files.upload",
-        "files.read.own",
-    }
+FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("users.read", ('users.read',)),
+    ("users.write", ('users.write',)),
+    ("users.delete", ('users.delete',)),
+    ("roles.read", ('roles.read',)),
+    ("roles.write", ('roles.write',)),
+    ("roles.assign", ('roles.assign',)),
+    ("roles.assign.elevate", ('roles.assign.elevate',)),
+    ("sessions.read / revoke", ('sessions.read', 'sessions.revoke')),
+    ("apikeys.*", ('apikeys.read', 'apikeys.write')),
+    ("settings.read", ('settings.read',)),
+    ("settings.write", ('settings.write',)),
+    ("scoring.configure", ('scoring.configure',)),
+    ("emission_factors.read", ('emission_factors.read',)),
+    ("emission_factors.write", ('emission_factors.write',)),
+    ("taxonomy.write", ('taxonomy.write',)),
+    ("bins.read", ('bins.read',)),
+    ("bins.write", ('bins.write',)),
+    ("bins.delete", ('bins.delete',)),
+    ("bins.telemetry.read", ('bins.telemetry.read',)),
+    ("bins.telemetry.ingest", ('bins.telemetry.ingest',)),
+    ("bins.maintenance.write", ('bins.maintenance.write',)),
+    ("alerts.read", ('alerts.read',)),
+    ("alerts.acknowledge / resolve", ('alerts.acknowledge', 'alerts.resolve')),
+    ("scoring.read", ('scoring.read',)),
+    ("collections.read", ('collections.read',)),
+    ("collections.create", ('collections.create',)),
+    ("collections.update", ('collections.update',)),
+    ("collections.complete.own", ('collections.complete.own',)),
+    ("collections.cancel", ('collections.cancel',)),
+    ("collections.schedule.write", ('collections.schedule.write',)),
+    ("routes.read", ('routes.read',)),
+    ("routes.create / update", ('routes.create', 'routes.update')),
+    ("routes.optimize", ('routes.optimize',)),
+    ("routes.assign / dispatch", ('routes.assign', 'routes.dispatch')),
+    ("routes.complete.own", ('routes.complete.own',)),
+    ("vehicles.read", ('vehicles.read',)),
+    ("vehicles.write / delete", ('vehicles.write', 'vehicles.delete')),
+    ("vehicles.telemetry.read", ('vehicles.telemetry.read',)),
+    ("vehicles.maintenance.write", ('vehicles.maintenance.write',)),
+    ("drivers.read", ('drivers.read',)),
+    ("drivers.write / assignments.write", ('drivers.write', 'drivers.assignments.write')),
+    ("facilities.read", ('facilities.read',)),
+    ("facilities.write / capacity.write", ('facilities.write', 'facilities.capacity.write')),
+    ("loads.read", ('loads.read',)),
+    ("loads.create / update", ('loads.create', 'loads.update')),
+    ("loads.transfer", ('loads.transfer',)),
+    ("loads.composition.write", ('loads.composition.write',)),
+    ("recovery.record", ('recovery.record',)),
+    ("weighbridge.record", ('weighbridge.record',)),
+    ("analytics.read", ('analytics.read',)),
+    ("analytics.export", ('analytics.export',)),
+    ("forecasts.read", ('forecasts.read',)),
+    ("forecasts.execute", ('forecasts.execute',)),
+    ("anomalies.read", ('anomalies.read',)),
+    ("anomalies.manage", ('anomalies.manage',)),
+    ("classification.execute", ('classification.execute',)),
+    ("classification.review", ('classification.review',)),
+    ("models.read", ('models.read',)),
+    ("models.manage", ('models.manage',)),
+    ("recommendations.read", ('recommendations.read',)),
+    ("recommendations.act", ('recommendations.act',)),
+    ("assistant.use", ('assistant.use',)),
+    ("reports.read", ('reports.read',)),
+    ("reports.generate", ('reports.generate',)),
+    ("reports.export", ('reports.export',)),
+    ("audit.read", ('audit.read',)),
+    ("integrations.read", ('integrations.read',)),
+    ("integrations.write", ('integrations.write',)),
+    ("files.upload / files.read.own", ('files.upload', 'files.read.own')),
+    ("data.export", ('data.export',)),
+    ("data.import", ('data.import',)),
+    ("retention.configure", ('retention.configure',)),
+    ("platform.*", ('audit.read.platform', 'platform.audit.read', 'platform.break_glass.activate', 'platform.jobs.manage', 'platform.maintenance', 'platform.models.manage', 'platform.system_settings.write', 'platform.tenants.read', 'platform.tenants.write')),
 )
 
-_ANALYST_READ = frozenset(
-    {
-        "settings.read",
-        "roles.read",
-        "users.read",
-        "emission_factors.read",
-        "bins.read",
-        "bins.telemetry.read",
-        "alerts.read",
-        "scoring.read",
-        "collections.read",
-        "routes.read",
-        "vehicles.read",
-        "vehicles.telemetry.read",
-        "drivers.read",
-        "facilities.read",
-        "loads.read",
-        "analytics.read",
-        "analytics.export",
-        "forecasts.read",
-        "forecasts.execute",
-        "anomalies.read",
-        "models.read",
-        "recommendations.read",
-        "assistant.use",
-        "reports.read",
-        "reports.generate",
-        "reports.export",
-        "data.export",
-        "files.upload",
-        "files.read.own",
-    }
-)
-
-_SUSTAINABILITY_READ = frozenset(
-    {
-        "settings.read",
-        "emission_factors.read",
-        "emission_factors.write",
-        "bins.read",
-        "bins.telemetry.read",
-        "alerts.read",
-        "scoring.read",
-        "collections.read",
-        "routes.read",
-        "vehicles.read",
-        "drivers.read",
-        "facilities.read",
-        "loads.read",
-        "analytics.read",
-        "analytics.export",
-        "forecasts.read",
-        "forecasts.execute",
-        "anomalies.read",
-        "models.read",
-        "recommendations.read",
-        "recommendations.act",
-        "assistant.use",
-        "reports.read",
-        "reports.generate",
-        "reports.export",
-        "data.export",
-        "files.upload",
-        "files.read.own",
-    }
-)
-
-_OPERATIONS_WRITE = frozenset(
-    {
-        "settings.read",
-        "scoring.configure",
-        "emission_factors.read",
-        "taxonomy.write",
-        "users.read",
-        "users.write",
-        "roles.read",
-        "roles.assign",
-        "sessions.read",
-        "sessions.revoke",
-        "bins.read",
-        "bins.write",
-        "bins.delete",
-        "bins.telemetry.read",
-        "bins.maintenance.write",
-        "alerts.read",
-        "alerts.acknowledge",
-        "alerts.resolve",
-        "scoring.read",
-        "collections.read",
-        "collections.create",
-        "collections.update",
-        "collections.cancel",
-        "collections.schedule.write",
-        "routes.read",
-        "routes.create",
-        "routes.update",
-        "routes.optimize",
-        "routes.assign",
-        "routes.dispatch",
-        "vehicles.read",
-        "vehicles.write",
-        "vehicles.delete",
-        "vehicles.telemetry.read",
-        "vehicles.maintenance.write",
-        "drivers.read",
-        "drivers.write",
-        "drivers.assignments.write",
-        "facilities.read",
-        "facilities.write",
-        "facilities.capacity.write",
-        "loads.read",
-        "loads.create",
-        "loads.update",
-        "loads.transfer",
-        "recovery.record",
-        "weighbridge.record",
-        "analytics.read",
-        "analytics.export",
-        "forecasts.read",
-        "anomalies.read",
-        "anomalies.manage",
-        "recommendations.read",
-        "recommendations.act",
-        "assistant.use",
-        "reports.read",
-        "integrations.read",
-        "data.export",
-        "data.import",
-        "files.upload",
-        "files.read.own",
-    }
-)
-
-_TENANT_ADMIN = _OPERATIONS_WRITE | frozenset(
-    {
-        "users.delete",
-        "roles.write",
-        "roles.assign.elevate",
-        "settings.write",
-        "apikeys.read",
-        "apikeys.write",
-        "integrations.write",
-        "retention.configure",
-        "audit.read",
-        "classification.execute",
-        "classification.review",
-        "reports.generate",
-    }
-)
-
-_SUPER_ADMIN = frozenset(
-    {
-        "platform.tenants.read",
-        "platform.tenants.write",
-        "platform.system_settings.write",
-        "platform.models.manage",
-        "platform.audit.read",
-        "platform.break_glass.activate",
-        "platform.jobs.manage",
-        "platform.maintenance",
-        "audit.read.platform",
-    }
-)
-
-_ROLES: tuple[RoleDefinition, ...] = (
-    RoleDefinition(
-        code="SUPER_ADMIN",
-        name="Platform administrator",
-        description=(
-            "EcoMind platform operator. Owns no tenant data and must activate "
-            "break-glass to read any."
-        ),
-        level=100,
-        permissions=_SUPER_ADMIN,
+GRANTS: dict[str, tuple[Grant, ...]] = {
+    "SUPER_ADMIN": (
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "FULL",
     ),
-    RoleDefinition(
-        code="TENANT_ADMIN",
-        name="Tenant administrator",
-        description="Full control of one tenant, including users, roles and settings.",
-        level=90,
-        permissions=_TENANT_ADMIN,
+    "TENANT_ADMIN": (
+        "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "FULL", "NONE", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "FULL", "NONE", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "NONE", "FULL", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "NONE", "FULL", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL",
+        "NONE",
     ),
-    RoleDefinition(
-        code="OPERATIONS_MANAGER",
-        name="Operations manager",
-        description="Runs day-to-day collection operations; no user or role management.",
-        level=70,
-        permissions=_OPERATIONS_WRITE,
+    "OPERATIONS_MANAGER": (
+        "FULL", "FULL", "NONE", "FULL", "NONE", "FULL", "NONE", "FULL",
+        "NONE", "FULL", "NONE", "FULL", "FULL", "NONE", "FULL", "FULL",
+        "FULL", "FULL", "FULL", "NONE", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "FULL", "NONE", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "NONE", "FULL", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "NONE", "NONE", "FULL", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "NONE", "FULL", "NONE", "FULL", "FULL", "FULL", "NONE",
+        "NONE",
     ),
-    RoleDefinition(
-        code="DISPATCHER",
-        name="Dispatcher",
-        description="Builds and dispatches routes, assigns crews, works the live board.",
-        level=60,
-        permissions=frozenset(
-            {
-                "settings.read",
-                "bins.read",
-                "bins.telemetry.read",
-                "alerts.read",
-                "alerts.acknowledge",
-                "alerts.resolve",
-                "scoring.read",
-                "collections.read",
-                "collections.create",
-                "collections.update",
-                "collections.cancel",
-                "collections.schedule.write",
-                "routes.read",
-                "routes.create",
-                "routes.update",
-                "routes.optimize",
-                "routes.assign",
-                "routes.dispatch",
-                "vehicles.read",
-                "vehicles.telemetry.read",
-                "drivers.read",
-                "drivers.write",
-                "drivers.assignments.write",
-                "facilities.read",
-                "loads.read",
-                "analytics.read",
-                "forecasts.read",
-                "anomalies.read",
-                "recommendations.read",
-                "assistant.use",
-                "reports.read",
-                "files.upload",
-                "files.read.own",
-            }
-        ),
+    "DISPATCHER": (
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "FULL", "NONE", "NONE", "NONE", "NONE", "NONE", "FULL",
+        "NONE", "NONE", "FULL", "NONE", "NONE", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "FULL", "NONE", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "NONE", "FULL", "NONE", "FULL", "NONE", "FULL",
+        "FULL", "FULL", "NONE", "FULL", "FULL", "NONE", "NONE", "NONE",
+        "NONE", "FULL", "NONE", "FULL", "NONE", "FULL", "FULL", "NONE",
+        "NONE", "NONE", "NONE", "FULL", "FULL", "FULL", "FULL", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "FULL", "NONE", "NONE", "NONE",
+        "NONE",
     ),
-    RoleDefinition(
-        code="DRIVER",
-        name="Driver",
-        description="Executes an assigned route; records quantities and exceptions.",
-        level=30,
-        permissions=frozenset(
-            {
-                "bins.read.own",
-                "bins.telemetry.read.own",
-                "alerts.read.own",
-                "collections.read.own",
-                "collections.complete.own",
-                "routes.read.own",
-                "routes.complete.own",
-                "vehicles.read.own",
-                "vehicles.telemetry.read.own",
-                "loads.read.own",
-                "files.upload",
-                "files.read.own",
-            }
-        ),
+    "DRIVER": (
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "OWN",
+        "NONE", "NONE", "OWN", "NONE", "NONE", "OWN", "NONE", "NONE",
+        "OWN", "NONE", "NONE", "FULL", "NONE", "NONE", "OWN", "NONE",
+        "NONE", "NONE", "FULL", "OWN", "NONE", "OWN", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "OWN", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "FULL", "NONE", "NONE", "NONE",
+        "NONE",
     ),
-    RoleDefinition(
-        code="FIELD_WORKER",
-        name="Field worker",
-        description="Services bins, performs maintenance, captures evidence.",
-        level=30,
-        permissions=frozenset(
-            {
-                "bins.read",
-                "bins.write",
-                "bins.telemetry.read",
-                "bins.maintenance.write",
-                "alerts.read",
-                "alerts.acknowledge",
-                "alerts.resolve",
-                "collections.read.own",
-                "collections.complete.own",
-                "anomalies.read",
-                "classification.execute",
-                "classification.review",
-                "loads.read",
-                "loads.composition.write",
-                "files.upload",
-                "files.read.own",
-            }
-        ),
+    "FIELD_WORKER": (
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "FULL",
+        "FULL", "NONE", "FULL", "NONE", "FULL", "FULL", "FULL", "NONE",
+        "OWN", "NONE", "NONE", "FULL", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "FULL", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "FULL", "NONE", "FULL",
+        "FULL", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "FULL", "NONE", "NONE", "NONE",
+        "NONE",
     ),
-    RoleDefinition(
-        code="FACILITY_MANAGER",
-        name="Facility manager",
-        description="Facility intake, processing outcomes and capacity.",
-        level=50,
-        permissions=frozenset(
-            {
-                "settings.read",
-                "emission_factors.read",
-                "bins.read",
-                "bins.maintenance.write",
-                "alerts.read",
-                "alerts.acknowledge",
-                "alerts.resolve",
-                "collections.read",
-                "vehicles.read",
-                "vehicles.maintenance.write",
-                "facilities.read",
-                "facilities.write",
-                "facilities.capacity.write",
-                "loads.read",
-                "loads.create",
-                "loads.update",
-                "loads.transfer",
-                "loads.composition.write",
-                "recovery.record",
-                "weighbridge.record",
-                "analytics.read",
-                "anomalies.read",
-                "classification.execute",
-                "classification.review",
-                "recommendations.read",
-                "recommendations.act",
-                "reports.read",
-                "reports.generate",
-                "files.upload",
-                "files.read.own",
-            }
-        ),
+    "FACILITY_MANAGER": (
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "FULL", "NONE", "NONE", "FULL", "NONE", "NONE", "FULL",
+        "NONE", "NONE", "NONE", "NONE", "FULL", "FULL", "FULL", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "FULL", "NONE", "NONE", "FULL", "NONE",
+        "NONE", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "FULL", "NONE", "NONE", "NONE", "FULL", "NONE", "FULL",
+        "FULL", "NONE", "NONE", "FULL", "FULL", "NONE", "FULL", "FULL",
+        "NONE", "NONE", "NONE", "NONE", "FULL", "NONE", "NONE", "NONE",
+        "NONE",
     ),
-    RoleDefinition(
-        code="ANALYST",
-        name="Analyst",
-        description="Read-heavy analytics, reports and exports; may trigger forecasts.",
-        level=40,
-        permissions=_ANALYST_READ,
+    "ANALYST": (
+        "FULL", "NONE", "NONE", "FULL", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "FULL", "NONE", "NONE", "FULL", "NONE", "NONE", "FULL",
+        "NONE", "NONE", "FULL", "NONE", "NONE", "FULL", "NONE", "FULL",
+        "FULL", "NONE", "NONE", "NONE", "NONE", "NONE", "FULL", "NONE",
+        "NONE", "NONE", "NONE", "FULL", "NONE", "FULL", "NONE", "FULL",
+        "NONE", "FULL", "NONE", "FULL", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "FULL", "FULL", "FULL", "FULL", "FULL", "NONE", "NONE",
+        "NONE", "FULL", "NONE", "FULL", "NONE", "FULL", "FULL", "FULL",
+        "FULL", "NONE", "NONE", "NONE", "FULL", "FULL", "NONE", "NONE",
+        "NONE",
     ),
-    RoleDefinition(
-        code="SUSTAINABILITY_MANAGER",
-        name="Sustainability manager",
-        description="Diversion, recovery, emissions and environmental reporting.",
-        level=50,
-        permissions=_SUSTAINABILITY_READ,
+    "SUSTAINABILITY_MANAGER": (
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "FULL", "NONE", "NONE", "FULL", "FULL", "NONE", "FULL",
+        "NONE", "NONE", "FULL", "NONE", "NONE", "FULL", "NONE", "FULL",
+        "FULL", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "FULL", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "FULL", "NONE", "FULL", "NONE", "NONE", "NONE", "FULL",
+        "NONE", "FULL", "FULL", "FULL", "FULL", "FULL", "NONE", "NONE",
+        "NONE", "FULL", "NONE", "FULL", "FULL", "FULL", "FULL", "FULL",
+        "FULL", "NONE", "NONE", "NONE", "FULL", "FULL", "NONE", "NONE",
+        "NONE",
     ),
-    RoleDefinition(
-        code="VIEWER",
-        name="Viewer",
-        description="Read-only operational visibility. No exports, no `.own` telemetry.",
-        level=10,
-        permissions=frozenset(
-            {
-                "settings.read",
-                "emission_factors.read",
-                "bins.read",
-                "alerts.read",
-                "collections.read",
-                "routes.read",
-                "vehicles.read",
-                "drivers.read",
-                "facilities.read",
-                "loads.read",
-                "analytics.read",
-                "forecasts.read",
-                "anomalies.read",
-                "recommendations.read",
-                "assistant.use",
-                "reports.read",
-            }
-        ),
+    "VIEWER": (
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "FULL", "NONE", "NONE", "FULL", "NONE", "NONE", "FULL",
+        "NONE", "NONE", "OWN", "NONE", "NONE", "FULL", "NONE", "NONE",
+        "FULL", "NONE", "NONE", "NONE", "NONE", "NONE", "FULL", "NONE",
+        "NONE", "NONE", "NONE", "FULL", "NONE", "NONE", "NONE", "FULL",
+        "NONE", "FULL", "NONE", "FULL", "NONE", "NONE", "NONE", "NONE",
+        "NONE", "FULL", "NONE", "FULL", "NONE", "FULL", "NONE", "NONE",
+        "NONE", "NONE", "NONE", "FULL", "NONE", "FULL", "FULL", "NONE",
+        "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE", "NONE",
+        "NONE",
     ),
-)
-
-#: Every seeded role, keyed by code.
-ROLE_DEFINITIONS: dict[str, RoleDefinition] = {role.code: role for role in _ROLES}
-
-#: The matrix itself: role code → granted permission codes.
-ROLE_PERMISSION_MAP: dict[str, frozenset[str]] = {
-    role.code: role.permissions for role in _ROLES
 }
 
+# ---------------------------------------------------------------------------
+# Derivation
+# ---------------------------------------------------------------------------
+def _resolve(role_code: str) -> frozenset[str]:
+    """
+    The permission codes a role grants, expanded from its grant marks.
 
-def permissions_for_role(role_code: str) -> frozenset[str]:
-    """The permission codes a seeded role grants. Unknown roles grant nothing."""
-    return ROLE_PERMISSION_MAP.get(role_code, frozenset())
+    ``OWN`` grants the ``.own`` variant of each code in the family. Where a
+    family has no ``.own`` variant the mark grants nothing: a mis-set mark must
+    not silently widen a role to the full family.
+    """
+    marks = GRANTS[role_code]
+    if len(marks) != len(FAMILIES):  # pragma: no cover - guarded by the test
+        raise ValueError(
+            f"role {role_code!r} has {len(marks)} grant marks for "
+            f"{len(FAMILIES)} families"
+        )
+    granted: set[str] = set()
+    for (_family, codes), mark in zip(FAMILIES, marks, strict=True):
+        if mark == "FULL":
+            granted.update(codes)
+        elif mark == "OWN":
+            # Only the ``.own`` variant, and only where one exists. A family with
+            # no ``.own`` variant therefore grants nothing under an ``OWN`` mark:
+            # a mis-set mark must not widen a role to the whole family.
+            granted.update(f"{code}.own" for code in codes if f"{code}.own" in PERMISSIONS)
+    return frozenset(granted)
 
 
 def _assert_catalogue_is_complete() -> None:
     """
     Fail at import if the matrix references a code the catalogue does not define.
 
-    A typo in the matrix would otherwise produce a role that silently grants
-    nothing, and the failure would surface as a 403 nobody can explain.
+    A typo in this table would otherwise produce a role that silently lacks a
+    permission -- which looks exactly like a working restriction until somebody
+    tries to use the feature. Catching it at import time turns that into a
+    startup failure with the offending name in the message.
     """
     unknown: set[str] = set()
-    for role_code, codes in ROLE_PERMISSION_MAP.items():
-        unknown.update(codes - set(PERMISSIONS))
-    if unknown:  # pragma: no cover - guarded by the matrix test
-        raise AssertionError(
-            "the role matrix grants permission codes that are not in the catalogue: "
-            + ", ".join(sorted(unknown))
+    for _family, codes in FAMILIES:
+        unknown.update(code for code in codes if code not in PERMISSIONS)
+    if unknown:
+        raise ValueError(
+            "the role matrix references permission codes that are not in the "
+            f"catalogue: {sorted(unknown)}"
         )
+
+
+#: Role presentation, keyed by role code. Kept apart from the grants so that the
+#: matrix above stays a table of marks rather than a mix of prose and data.
+_ROLE_METADATA: dict[str, tuple[str, str, int, bool]] = {
+    "SUPER_ADMIN": (
+        "Platform administrator",
+        "EcoMind platform operator. Owns no tenant data and must activate "
+        "break-glass to read any.",
+        100,
+        False,
+    ),
+    "TENANT_ADMIN": (
+        "Tenant administrator",
+        "Full control of one tenant, including users, roles and settings.",
+        90,
+        False,
+    ),
+    "OPERATIONS_MANAGER": (
+        "Operations manager",
+        "Runs day-to-day collection operations; no user or role management.",
+        70,
+        False,
+    ),
+    "DISPATCHER": (
+        "Dispatcher",
+        "Builds and dispatches routes, assigns crews, works the live board.",
+        60,
+        False,
+    ),
+    "DRIVER": (
+        "Driver",
+        "Sees only their own route and stops, and completes their own collections.",
+        40,
+        False,
+    ),
+    "FIELD_WORKER": (
+        "Field worker",
+        "Collects and records on the ground, including offline capture.",
+        30,
+        False,
+    ),
+    "FACILITY_MANAGER": (
+        "Facility manager",
+        "Operates a facility: intake, processing outcomes and capacity.",
+        50,
+        False,
+    ),
+    "ANALYST": (
+        "Analyst",
+        "Reads and exports operational and environmental data; changes nothing.",
+        20,
+        False,
+    ),
+    "SUSTAINABILITY_MANAGER": (
+        "Sustainability manager",
+        "Owns carbon, recovery and diversion reporting and the emission factors "
+        "behind them.",
+        35,
+        False,
+    ),
+    "VIEWER": (
+        "Viewer",
+        "Read-only overview of the tenant's operations.",
+        10,
+        True,
+    ),
+}
+
+_ROLES: tuple[RoleDefinition, ...] = tuple(
+    RoleDefinition(
+        code=code,
+        name=metadata[0],
+        description=metadata[1],
+        level=metadata[2],
+        is_default=metadata[3],
+        permissions=_resolve(code),
+    )
+    for code, metadata in _ROLE_METADATA.items()
+)
+
+#: Every seeded role, by code.
+ROLE_DEFINITIONS: dict[str, RoleDefinition] = {role.code: role for role in _ROLES}
+
+#: The resolved permission set of every seeded role, by code.
+ROLE_PERMISSION_MAP: dict[str, frozenset[str]] = {
+    role.code: role.permissions for role in _ROLES
+}
+
+
+def permissions_for_role(role_code: str) -> frozenset[str]:
+    """
+    The permission codes ``role_code`` grants.
+
+    An unknown role yields an empty set rather than raising: this is called while
+    building an actor, and a stale role code must not turn every request into a
+    500. A role that grants nothing denies everything, which fails closed.
+    """
+    return ROLE_PERMISSION_MAP.get(role_code, frozenset())
 
 
 _assert_catalogue_is_complete()

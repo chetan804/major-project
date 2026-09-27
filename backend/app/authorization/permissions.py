@@ -187,12 +187,17 @@ _RAW: tuple[tuple[str, PermissionDefinition], ...] = (
     _define("classification.execute", "ai", "Submit an image for waste classification."),
     _define("classification.review", "ai", "Verify or correct a classification."),
     _define("models.read", "ai", "View the model registry and published metrics."),
+    # Tenant scope, and granted to no role: promoting a model to ACTIVE is a
+    # platform action (``platform.models.manage``), because a tenant activating
+    # an unevaluated model would breach the scientific-integrity rules
+    # (``rbac.md`` §4.1, ADR-0008). The code exists so the capability is named
+    # and can be audited if a tenant is ever granted it deliberately.
     _define(
         "models.manage",
         "ai",
-        "Promote or retire a model version.",
+        "Promote or retire a model version (tenant scope, granted to nobody).",
         is_dangerous=True,
-        scope=PermissionScope.PLATFORM,
+        scope=PermissionScope.TENANT,
     ),
     _define("recommendations.read", "ai", "View recommendations."),
     _define("recommendations.act", "ai", "Accept, reject or execute a recommendation."),
