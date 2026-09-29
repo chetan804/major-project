@@ -2478,20 +2478,88 @@ def downgrade() -> None:
 # Schema contract: isolation, reference data, views
 # ---------------------------------------------------------------------------
 def _tenant_tables() -> list[str]:
-    """
-    Every tenant-owned table in the ORM metadata.
+    """Frozen tables created by THIS revision, not future ORM metadata.
 
-    Read from the models rather than listed by hand: a table added to a model
-    module is covered the moment it exists, and a table removed from the models
-    stops being referenced. A hand-maintained list would drift on the first
-    change and silently leave a table unprotected.
+    Using live model discovery here made a clean install try to apply policies
+    to future tables before their migrations ran. The list preserves the exact
+    original DDL; each later revision must install its own policies. The live
+    RLS coverage test still checks all current models.
     """
-    from app.db import rls
-    from app.db.base import Base
-    from app.models import import_all_models
-
-    import_all_models()
-    return rls.tenant_scoped_table_names(Base.metadata)
+    return [
+        "addresses",
+        "anomalies",
+        "anomaly_events",
+        "api_keys",
+        "assistant_conversations",
+        "assistant_messages",
+        "audit_logs",
+        "bin_alerts",
+        "bin_maintenance",
+        "bin_sensors",
+        "bin_telemetry",
+        "bin_telemetry_latest",
+        "bin_types",
+        "bins",
+        "carbon_estimates",
+        "classification_feedback",
+        "collection_events",
+        "collection_requests",
+        "collection_schedules",
+        "collection_tasks",
+        "composting_events",
+        "disposal_events",
+        "domain_events",
+        "driver_assignments",
+        "drivers",
+        "environmental_metrics",
+        "facilities",
+        "facility_capabilities",
+        "facility_capacity_utilization",
+        "facility_types",
+        "file_assets",
+        "forecast_runs",
+        "forecasts",
+        "geo_points",
+        "ingestion_batches",
+        "job_runs",
+        "ml_datasets",
+        "model_metrics",
+        "notification_preferences",
+        "notifications",
+        "organization_profiles",
+        "recommendation_feedback",
+        "recommendations",
+        "recovery_events",
+        "report_runs",
+        "role_permissions",
+        "roles",
+        "route_assignments",
+        "route_comparisons",
+        "route_optimization_runs",
+        "route_stops",
+        "routes",
+        "scoring_configurations",
+        "service_areas",
+        "sessions",
+        "tenant_settings",
+        "tenant_waste_categories",
+        "treatment_events",
+        "user_roles",
+        "users",
+        "vehicle_capacities",
+        "vehicle_maintenance",
+        "vehicle_telemetry",
+        "vehicle_types",
+        "vehicles",
+        "waste_category_mappings",
+        "waste_classifications",
+        "waste_load_items",
+        "waste_loads",
+        "waste_transfers",
+        "webhook_deliveries",
+        "webhooks",
+        "zones",
+    ]
 
 
 def _apply_tenant_isolation() -> None:

@@ -153,6 +153,8 @@ FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "platform.jobs.manage",
             "platform.maintenance",
             "platform.models.manage",
+            "platform.operators.read",
+            "platform.operators.write",
             "platform.system_settings.write",
             "platform.tenants.read",
             "platform.tenants.write",

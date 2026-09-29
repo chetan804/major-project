@@ -32,7 +32,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Request, Response, status
 from fastapi.responses import PlainTextResponse
 
 from app.api.deps import CacheDep, DatabaseDep, SettingsDep
@@ -102,6 +102,7 @@ async def ready(
     database: DatabaseDep,
     cache: CacheDep,
     response: Response,
+    request: Request,
 ) -> dict[str, Any]:
     """
     Dependency health with an honest status and explicit reasons.
@@ -144,7 +145,16 @@ async def ready(
     if settings.redis_adapter == "fakeredis" or settings.job_runner == "inline":
         checks["deployment_adapters"] = settings.adapter_summary()
 
-    healthy = db_health.reachable
+    rate_healthy = await request.app.state.auth_rate_limiter.healthy()
+    checks["auth_rate_limits"] = {
+        "status": "ok" if rate_healthy else "unavailable",
+        "enabled": settings.rate_limit_enabled,
+    }
+    if not rate_healthy:
+        warnings.append(
+            "Authentication rate-limit store unavailable; protected credential operations fail closed."
+        )
+    healthy = db_health.reachable and rate_healthy
     if not healthy:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 

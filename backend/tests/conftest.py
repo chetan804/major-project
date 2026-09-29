@@ -181,7 +181,7 @@ def test_database_url(postgres_cluster: str) -> Iterator[str]:
 # Settings
 # ---------------------------------------------------------------------------
 @pytest.fixture
-def test_settings(test_database_url: str) -> Iterator:
+def test_settings(test_database_url: str, tmp_path: Path) -> Iterator:
     """
     A :class:`Settings` instance bound to the test database.
 
@@ -189,6 +189,8 @@ def test_settings(test_database_url: str) -> Iterator:
     developer's local ``.env`` can never redirect the suite at their development
     database.
     """
+    from cryptography.fernet import Fernet
+
     from app.core.config import Settings
 
     settings = Settings(
@@ -206,6 +208,10 @@ def test_settings(test_database_url: str) -> Iterator:
         metrics_enabled=True,
         storage_provider="local",
         email_provider="console",
+        auth_delivery_enabled=True,
+        auth_mail_encryption_key=Fernet.generate_key().decode(),
+        mfa_encryption_key=Fernet.generate_key().decode(),
+        auth_mailbox_root=str(tmp_path / "mailbox"),
         routing_provider="local_haversine",
         weather_provider="local_synthetic",
         llm_provider="local",

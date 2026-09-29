@@ -1,9 +1,99 @@
 # EcoMind-AI — Security Model
 
-**Status:** Phase 0 baseline · **Baseline guidance:** OWASP ASVS L2 / Top 10
+**Status:** Phase 0 design baseline with Phase 2 implementation notes · **Baseline guidance:** OWASP ASVS L2 / Top 10
 **Related:** `rbac.md`, `../architecture/decisions.md` (ADR-0003, ADR-0004), `../api/rest-api.md` §1.2, `../../.env.example`
 
 ---
+
+## Implementation status (2026-09-29)
+
+**Phase 2 API/security gate complete.** See `../reports/phase-2-gate.md` for exact
+scope, full-suite evidence and deployment limitations. Role/route matrix and
+OpenAPI checks now supplement these service/DB integration suites.
+
+The sections below describe the target security model; planned tests and
+controls are not evidence of implementation. The currently verified auth suite
+is `backend/tests/security/test_auth_lifecycle.py` (36 tests against PostgreSQL
+with a non-superuser runtime role). See ADR-0014 for refresh-token routing,
+serialization and transaction decisions.
+
+Implemented: tenant-bound login/reset and bearer queries; exact session/user/
+tenant claim matching; inactive-account rejection; persisted lockout counters;
+retained refresh history and family revocation on reuse; concurrent-refresh
+safety; session ownership; password change and single-use reset confirmation;
+permission-checked invitations without issuing sessions. Audit change details
+are stored in the existing `metadata` JSON column.
+
+Recovery delivery and public email verification now use a forced-RLS encrypted
+outbox, private local mailbox or verified STARTTLS, and one-use expiring codes.
+IP budgets precede body parsing; HMAC-keyed account/token budgets precede lookup.
+Security counters fail closed (503), unlike the optional cache; budget exhaustion
+returns 429 with Retry-After. Production requires shared Redis 7+; development
+memory counters are bounded and labelled simulated. See ADR-0016 and the
+[recovery runbook](../api/account-recovery.md). Forty-two focused tests in
+`test_auth_delivery.py`, `test_auth_rate_limits.py`, `test_auth_mail.py`, and
+`test_rate_limits.py` cover this slice. Local delivery is end-to-end verified;
+external SMTP and a real Redis server remain unverified here.
+
+Not implemented: refresh cookies/origin checks, session/outbox-history retention,
+JWT issuer/audience/not-before claims, and general API/edge rate limiting. Current
+tokens are returned as JSON and refresh is submitted in JSON. Recovery request
+bodies/status are neutral for eligible/ineligible accounts; this is not a claim
+of constant-time account lookup. Auth responses prohibit caching.
+Tenant administration is now implemented and covered by 57 additional tests in
+`test_identity_admin.py`, including all nine tenant roles against all new routes.
+Writes serialize on the tenant and recheck grants after locking; last-admin
+recovery permissions and role privilege ceilings are enforced (ADR-0015).
+The dev seed is CLI-only, environment-restricted and never restores modified
+access. The production app must connect without superuser/BYPASSRLS privileges.
+
+Tenant audit browsing and administrative sessions are implemented (ADR-0017):
+explicit DTOs, audited successful reads, signed bounded cursors, family/bulk
+revocation, privilege ceilings and live authorization rechecks. The new suite has
+44 real-RLS security tests plus 14 cursor/redaction unit cases. Audit repository
+mutation paths are explicitly blocked; the restricted-role suite also rejects
+raw UPDATE/DELETE. Production must grant audit SELECT/INSERT only to a non-owner
+runtime role. Redaction is bounded defense in depth, not a detector for arbitrary
+unlabelled secrets. The tenant mutex uses NO KEY UPDATE to avoid foreign-key lock
+inversion with User-locked refresh transactions. Platform audit, exports/retention and frontend remain planned; see `../api/security-administration.md`.
+
+API-key lifecycle is now implemented (ADR-0018): six human-authenticated,
+permission-declared management operations, finite expiry, hashed storage,
+one-time committed disclosure, non-expanding rotation and explicit revocation.
+The device scope allowlist excludes human/platform administration. Authentication
+is tenant-bound under RLS and rejects inactive tenants/keys and unsafe scopes;
+it returns no JWT or human grants. Machine audit attribution uses a separate
+key FK rather than pretending the key UUID is a User. Migration rollback archives
+that attribution before removing its column. There are 64 dedicated lifecycle
+security cases, 4 unit cases and a data-bearing migration round-trip regression.
+Machine HTTP ingestion, per-key HTTP budgets and production throughput are not
+implemented/verified here. See `../api/api-keys.md`.
+
+Correction to the earlier lock evidence: sessions/audit logs have no Tenant FK;
+the forced FK regression now uses the recovery outbox, which does. The NO KEY
+UPDATE mutex remains unchanged. Separate tests cover refresh versus revocation.
+
+Platform tenant registry administration is implemented separately (ADR-0019), with
+six guarded routes and offline, non-repairing first-operator bootstrap. Registry
+provisioning, user/role setup, encrypted invitation delivery and audit are atomic.
+Suspension takes the tenant/user mutexes, invalidates human sessions/recovery codes
+and gates machine use by tenant state; activation does not revive human sessions.
+Login/recovery now reload tenant eligibility after user-lock waits. Invitation
+aliases now use live administration guards. Scope-filtered permission resolution
+also rejects misconfigured cross-scope role grants. See `../api/platform-tenants.md`.
+There is no break-glass bypass, tenant impersonation or platform audit API yet.
+Opt-in platform-action TOTP is implemented; login-wide MFA is not.
+
+Platform tenant mutations now also require explicit session-bound password
+confirmation (ADR-0020), with five-minute expiry, live grant checks, IP/account
+budgets, shared lockout and transactional success/denial audits. Confirmation is not
+inherited on refresh, and password changes clear it on kept sessions as well.
+`1eb8da7c2793` adds a nullable timestamp; no existing session gains authority.
+See `../api/platform-step-up.md`. Password-only confirmation remains the unenrolled
+flow. ADR-0021 adds opt-in TOTP/recovery verification for enrolled platform writers;
+see `../api/platform-mfa.md`. ADR-0022 adds MFA-protected operator lifecycle, required
+policy for HTTP invitees, and one-way policy enforcement for legacy operators.
+Break-glass and all-factor-loss recovery remain deferred; see `../api/platform-operators.md`.
 
 ## 1. Threat model summary
 
@@ -11,7 +101,7 @@
 |---|---|---|---|
 | T1 | Cross-tenant data access (IDOR/BOLA) | Server-derived tenant context; `TenantScopedRepository`; PostgreSQL RLS; 404-on-foreign; security audit events | `backend/tests/db/test_rls_coverage.py` (RLS enforcement, proven per tenant) |
 | T2 | Privilege escalation | Permission-string checks; `roles.assign.elevate` gating; permission-set provenance; no client-supplied scopes | `tests/security/test_privilege_escalation.py` |
-| T3 | Credential theft / session hijack | Argon2id; 15-min access tokens; rotating refresh tokens with reuse detection + family revocation; session revocation; lockout | `tests/auth/test_token_lifecycle.py` |
+| T3 | Credential theft / session hijack | Argon2id; 15-min access tokens; rotating refresh tokens with reuse detection + family revocation; session revocation; lockout | `backend/tests/security/test_auth_lifecycle.py` |
 | T4 | SQL injection | SQLAlchemy parameterised queries only; no string-built SQL; allow-listed sort columns | `tests/security/test_injection.py` |
 | T5 | Mass assignment | `extra="forbid"` on all input schemas; explicit field allow-lists in services | `tests/api/test_mass_assignment.py` |
 | T6 | Malicious file upload | Magic-byte sniffing, size/dimension limits, decode test, server-generated storage names, path-traversal guard, quarantine state | `tests/security/test_file_upload.py` |
@@ -41,9 +131,13 @@ WAF management, hardware security modules, and third-party penetration testing.
   `iat`, `nbf`, `exp`, `jti`, `iss`, `aud`. A `sid` referencing a revoked or
   rotated session is rejected even if the JWT is otherwise valid — signature
   validity is necessary, not sufficient.
-* **Refresh tokens:** opaque 256-bit random values, stored only as SHA-256
-  hashes, rotated on every use, grouped in a `family_id`. Reuse of a consumed
-  token revokes the entire family and raises a security audit event.
+* **Refresh tokens (implemented):** `rt1.<tenant-uuid>.<384-bit-random-secret>`,
+  opaque to clients. The UUID is only an untrusted routing hint; the complete
+  SHA-256 hash must match within that tenant under RLS. Rotation inserts a new
+  row and retains the consumed hash, linked by `family_id` and predecessor id.
+  Reuse revokes the entire family and records an audit event. A lost-response
+  retry also triggers this fail-closed behavior; clients must serialize refresh.
+  Legacy unprefixed tokens are rejected and require sign-in.
 * **Login protections:** constant-time comparison, generic error message (no
   user enumeration), progressive lockout (`failed_login_attempts`, `locked_until`),
   `last_login_at`/`last_login_ip` recorded, and an audit entry per attempt
@@ -53,9 +147,10 @@ WAF management, hardware security modules, and third-party penetration testing.
 * **Email verification & password reset:** token-based architecture with
   single-use expiring tokens; providers behind the notification adapter, so the
   flows are exercisable in development with the console adapter.
-* **MFA:** schema-ready (`users.mfa_secret_encrypted`, encrypted at rest) with
-  TOTP architecture documented; not enabled in this build. Stated as a
-  limitation rather than half-implemented.
+* **MFA:** opt-in platform-action TOTP/recovery is implemented (ADR-0021), using
+  independently encrypted seeds, single-use recovery hashes and factor-bound session
+  proofs. Mandatory enrollment, login-wide MFA and WebAuthn remain planned; ordinary
+  tenant-user login is not second-factor protected.
 * **API keys (devices/integrations):** `prefix.secret` format, only the hash
   stored, scoped, expiring, revocable, and usage-tracked. Device keys are
   distinct from user credentials and are granted no human permissions.
@@ -66,8 +161,10 @@ WAF management, hardware security modules, and third-party penetration testing.
 
 Detail in `rbac.md`. Security-relevant summary:
 
-* Deny by default; every endpoint declares required permissions and a startup
-  self-check fails the app if any endpoint declares none.
+* Deny by default; the production startup check inspects actual mounted dependencies,
+  including hidden routes. Known permission declarations plus live actor authentication
+  are required, except explicitly reasoned public and authenticated self-service
+  operations (ADR-0023). No arbitrary bearer-only route is accepted.
 * Permission checks are enforced in the route dependency **and** in sensitive
   service methods (defence against internal call paths bypassing the route).
 * `SUPER_ADMIN` holds only `scope=PLATFORM` permissions that cannot be granted

@@ -71,6 +71,19 @@ def _define(
 
 
 _RAW: tuple[tuple[str, PermissionDefinition], ...] = (
+    _define(
+        "platform.operators.read",
+        "platform",
+        "Read platform operator metadata.",
+        scope=PermissionScope.PLATFORM,
+    ),
+    _define(
+        "platform.operators.write",
+        "platform",
+        "Invite and contain platform operators; require action MFA.",
+        scope=PermissionScope.PLATFORM,
+        is_dangerous=True,
+    ),
     # -- Identity and access -------------------------------------------------
     _define("users.read", "identity", "List and view tenant users."),
     _define(

@@ -156,6 +156,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
         return JSONResponse(
             status_code=500,
+            headers={"Cache-Control": "no-store"},
             content=error_envelope(
                 code=ErrorCode.INTERNAL_ERROR,
                 details={},

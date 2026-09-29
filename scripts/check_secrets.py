@@ -216,7 +216,9 @@ RULES: tuple[Rule, ...] = (
     ),
     Rule(
         "jwt",
-        re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+        re.compile(
+            r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
+        ),
         "A JSON Web Token. Signed tokens in a repository are either a leak or a "
         "test fixture that should be generated at runtime.",
     ),
@@ -389,7 +391,9 @@ def check_env_example() -> list[str]:
     """
     path = REPO_ROOT / ".env.example"
     if not path.exists():
-        return [".env.example: missing. It is the documented contract for configuration."]
+        return [
+            ".env.example: missing. It is the documented contract for configuration."
+        ]
 
     findings: list[str] = []
     text = _read_text(path) or ""
@@ -421,6 +425,32 @@ def scan(paths: Iterable[Path]) -> list[str]:
     return findings
 
 
+def scan_index(paths: Iterable[Path]) -> list[str]:
+    """Inspect actual index blobs, not the potentially different working copy."""
+    findings: list[str] = []
+    for path in paths:
+        if _is_skipped(path):
+            continue
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        result = subprocess.run(
+            ["git", "show", "--no-ext-diff", "--no-textconv", ":" + relative],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Cannot inspect index entry: {relative}")
+        raw = result.stdout
+        if b"\0" in raw[:8192]:
+            continue
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        findings.extend(f"{finding} (index)" for finding in scan_text(path, content))
+    return findings
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Fail if a credential is present in the repository.",
@@ -439,6 +469,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     findings = scan(files)
+    try:
+        findings.extend(scan_index(files))
+    except RuntimeError as exc:
+        print(f"secret scan could not inspect the index: {exc}", file=sys.stderr)
+        return 2
     findings.extend(check_env_file())
     findings.extend(check_env_example())
 

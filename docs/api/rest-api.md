@@ -91,6 +91,25 @@ Endpoints are listed as `METHOD path — permission — notes`. Read endpoints a
 subject to the pagination/filter conventions above without restating them.
 
 ### 2.1 Auth & session — `/api/v1/auth`
+
+**Implementation note (2026-09-29):** the table below is the target contract.
+Current routes are defined in `backend/app/api/v1/auth.py` and live OpenAPI.
+Password change currently uses `/me/password`, invitations `/users`, reset
+request `/password-reset`, and confirmation `/password-reset/confirm`.
+Public email verification request/confirmation are implemented at the paths
+below. Reset and verification requests return neutral 202 responses with
+`delivery_status: "queued_if_eligible"` and explicit `delivery_mode` (not an inbox
+delivery claim). Encrypted outbox, local mailbox/STARTTLS worker, single-use
+confirmation and fail-closed auth budgets are described in
+[`account-recovery.md`](account-recovery.md). Delivery-disabled requests return
+503 uniformly, and exhausted budgets return 429 with `Retry-After`.
+Login/reset require `tenant_slug`. Refresh still accepts only `refresh_token`:
+the token contains an untrusted tenant-routing hint checked against the full
+stored hash under RLS (ADR-0014). Treat it as opaque. Rotation returns a **new
+session id**; consumed tokens must never be retried, including after an ambiguous
+network failure. Legacy tokens require sign-in again. Tokens are JSON values,
+not cookies, in the current implementation.
+
 | Method | Path | Permission | Notes |
 |---|---|---|---|
 | POST | `/register` | public | Tenant self-service signup (configurable); creates tenant + TENANT_ADMIN, `status=TRIAL`. Rate-limited, audited. |
@@ -103,21 +122,97 @@ subject to the pagination/filter conventions above without restating them.
 | POST | `/password/change` | authenticated | Requires current password; revokes other sessions. |
 | POST | `/password/reset-request` | public | Architecture + provider adapter; always returns 202 (no enumeration). |
 | POST | `/password/reset-confirm` | public | Single-use, expiring token. |
-| POST | `/email/verify-request` | authenticated | Token dispatch via adapter. |
+| POST | `/email/verify-request` | public | Neutral queued-if-eligible response, including invited accounts; IP/account budgets. |
 | POST | `/email/verify-confirm` | public | Marks verified. |
 | GET | `/sessions` | `sessions.read` | Active sessions with device/ip/last-used. |
 | DELETE | `/sessions/{id}` | `sessions.revoke` | Revoke one session. |
 
+**Administrative sessions (implemented 2026-09-29):** `GET /api/v1/sessions`
+requires `sessions.read`; `DELETE /api/v1/sessions/{id}` and
+`POST /api/v1/users/{id}/sessions/revoke-all` require `sessions.revoke` plus the
+existing privilege ceiling. Revocation covers a device's refresh family; bulk
+revocation includes the caller when targeting themselves. `/auth/sessions`
+remains self-service. See [the security administration contract](security-administration.md).
+
+**API-key management (implemented 2026-09-29):** `GET /api-key-scopes`,
+`GET /api-keys`, `GET /api-keys/{id}` require `apikeys.read`; `POST /api-keys`,
+`POST /api-keys/{id}/rotate`, `DELETE /api-keys/{id}` require `apikeys.write`.
+Management remains human bearer-authenticated. Plaintext appears only in a
+committed create/rotate response; other responses are metadata-only. See
+[`api-keys.md`](api-keys.md) for finite expiry, delegation, cutover and audit rules.
+No machine-key HTTP ingestion endpoint is implemented by this slice.
+
 ### 2.2 Tenants & settings — `/api/v1/tenants`, `/api/v1/settings`
+
+**Implemented 2026-09-29:** `GET /tenants/current` (`settings.read`) and
+`PATCH /tenants/current` (`settings.write`). Writable fields: `name`, IANA
+`timezone`, `locale`; explicit nulls are invalid. Tenant-side plan/status/slug/ID updates and generic settings below remain planned.
+Platform registry operations are implemented separately as described below.
+
 `GET /tenants/current` · `PATCH /tenants/current` (`settings.write`) ·
 `GET /settings` · `PUT /settings/{key}` (`settings.write`) ·
 `GET|POST /scoring-configurations` (`scoring.read`/`scoring.configure`) ·
 `POST /scoring-configurations/{id}/activate`.
-Platform: `GET|POST /platform/tenants`, `GET|PATCH /platform/tenants/{id}`,
-`POST /platform/tenants/{id}/suspend`, `POST /platform/break-glass` (audited,
-time-boxed) — all `platform.*`.
+**Platform implemented 2026-09-29:** `GET|POST /platform/tenants`,
+`GET|PATCH /platform/tenants/{id}`, `POST /platform/tenants/{id}/suspend`,
+`POST /platform/tenants/{id}/activate`. Reads require `platform.tenants.read`;
+writes require `platform.tenants.write`, a reason, live human platform identity
+and a recent session-bound password confirmation. Provisioning queues initial administrator verification without disclosing
+credentials. See [`platform-tenants.md`](platform-tenants.md). These are registry
+controls, not access to tenant data. `POST /platform/break-glass` remains **planned**.
+
+**Credential confirmation implemented:** `POST /platform/auth/step-up` accepts
+`password` and, for enrolled operators, exactly one of `totp_code` or `recovery_code`.
+It returns `method` plus `expires_at` after commit and requires
+`platform.tenants.write`. `DELETE /platform/auth/step-up` clears it without logout.
+The five-minute session window is required for the four platform registry mutations;
+refresh/password changes clear it. Reads do not require it. Unenrolled operators
+without mandatory policy retain password-only registry confirmation; enrolled or
+required operators need the second factor for registry writes. Operator lifecycle
+writes always require it.
+See [`platform-step-up.md`](platform-step-up.md).
+
+**Opt-in action MFA implemented:** GET `/platform/auth/mfa`, POST/DELETE
+`/platform/auth/mfa/enrollment`, POST `/platform/auth/mfa/enrollment/confirm`, and
+POST `/platform/auth/mfa/recovery-codes`. All are human platform-writer operations.
+No active-factor disable, password-only factor recovery or login-wide MFA is provided.
+See [`platform-mfa.md`](platform-mfa.md) for issuance, replacement and rollback.
+
+**Operator lifecycle implemented:** GET/POST `/platform/operators`, GET
+`/platform/operators/{user_id}`, and POST `/{user_id}/suspend`, `/activate`,
+`/require-mfa` under that prefix. Dedicated `platform.operators.read/write` gates
+own-realm metadata; every write additionally needs current MFA proof. Invitations
+require the complete platform grant set and create a fixed SUPER_ADMIN with mandatory
+action-MFA policy. No role editor, factor removal or all-factor-loss recovery exists.
+See [`platform-operators.md`](platform-operators.md).
 
 ### 2.3 Users, roles — `/api/v1/users`, `/api/v1/roles`
+
+**Implemented 2026-09-29:** all user/role operations listed below, plus
+`GET /roles/{id}`. `POST /roles` creates a custom bundle from `code`, `name`,
+optional `description`, and `permissions` (permission-code array); there is no
+special clone endpoint yet. `/auth/users` remains an invitation alias.
+
+* User list accepts `page` (1+), `page_size` (1–100), `search`, `status`, `role`
+  (role code), and comma-separated allowlisted `sort` fields. Lists return
+  `{items, meta}`. Search wildcards are literal; expired grants do not match.
+* Administrative user PATCH supports name/phone/preferences and status
+  `ACTIVE|SUSPENDED|DISABLED`; activation is not proof of email verification.
+  Status changes revoke sessions and outstanding reset tokens. DELETE is soft;
+  deleted addresses remain reserved in their tenant. Duplicate invites return 409.
+* Role assignment body: `role_id` and optional aware, future `expires_at`.
+  Assign/revoke returns 204. Expired grants confer no permissions.
+* Role metadata PATCH allows `name`/`description`; permission replacement body is
+  `{ "permissions": ["users.read"] }`. Permissions are checked live, not cached.
+* Grants beyond the actor's permissions require `roles.assign.elevate`.
+  Platform/device/model-promotion grants are forbidden to the human role editor.
+* Removing the last permanent recovery administrator returns 422 with rule
+  `BR-IDENTITY-LAST-ADMIN`, including through role edits or expiring grants.
+  Foreign-tenant user/role identifiers return 404. All mutations are audited.
+* Invitations are administrative account creation with an initial password,
+  not email delivery; notification delivery remains unimplemented. They start
+  with no role grants; an administrator must assign roles explicitly.
+
 `GET /users` · `POST /users/invite` · `GET /users/{id}` · `PATCH /users/{id}` ·
 `DELETE /users/{id}` (soft) · `POST /users/{id}/roles` · `DELETE /users/{id}/roles/{role_id}` ·
 `GET /users/me/permissions`.
@@ -318,8 +413,11 @@ plausible-sounding invention.
 `GET /reports/definitions` · `POST /reports/generate` (202) ·
 `GET /reports/runs` · `GET /reports/runs/{id}` · `GET /reports/runs/{id}/export?format=csv|json`
 (`reports.export`) · `POST /reports/schedules`.
-`GET /audit-logs` (`audit.read`, read is itself audited) ·
-`GET /audit-logs/{id}` · `GET /audit-logs/export` (`data.export`).
+**Implemented:** `GET /audit-logs` and `GET /audit-logs/{id}` require `audit.read`;
+successful reads are themselves audited before data is returned. Listing uses
+signed tenant/filter-bound cursors, explicit exact-match/time filters and bounded
+redacted DTOs. See [`security-administration.md`](security-administration.md).
+`GET /audit-logs/export` (`data.export`) remains planned.
 `GET /jobs` · `GET /jobs/{id}` · `POST /jobs/{id}/retry` (platform).
 `POST /files/upload` (`files.upload`) · `GET /files/{id}` (ownership-checked) ·
 `DELETE /files/{id}`.
@@ -337,3 +435,19 @@ detailed dependency state in `/health`).
 | `PUT /bins/{id}/fill-level` | Fill level is derived from telemetry, never hand-editable (BR-05). Manual corrections happen by inserting a `MANUAL`-source telemetry reading with an actor, which is auditable. |
 | Route mutation inside `/optimize` | Optimization must not silently change operational plans; `apply` is a separate, explicit, permission-checked step. |
 | Live GPS websockets | Not in scope for this build; the polling endpoints return `SIMULATED`-labelled positions. |
+
+
+## Phase 2 published-contract verification (2026-09-29)
+
+The current mounted surface contains **60** versioned operations. The generated
+OpenAPI contract advertises bearer authentication for all 54 authenticated operations,
+`x-required-permissions` from real dependencies, and the standard error envelope.
+Request validation is **400**; **422** is for domain/business rules, not FastAPI's
+default validation body. JSON request models reject extra fields. Six public auth
+operations remain explicitly classified; eight caller-scoped operations need a live
+actor but no invented role permission. Startup rejects undeclared/unknown permissions
+and unreviewed surfaces before opening resources. Planned operations elsewhere in this
+design remain unmounted unless their section explicitly says implemented.
+
+See [`../reports/phase-2-gate.md`](../reports/phase-2-gate.md) for completion scope,
+verification, deployment limitations and the Phase 3 handoff.

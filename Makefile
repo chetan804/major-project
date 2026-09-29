@@ -199,3 +199,11 @@ clean: ## Remove caches and build output. Leaves .venv and .runtime alone.
 .PHONY: clean-all
 clean-all: clean ## Also remove the venv and the local database cluster.
 	rm -rf $(VENV) .runtime
+
+.PHONY: seed
+seed: ## Provision the development tenant/admin (never resets existing access).
+	cd $(BACKEND) && $(PY) -m app.scripts.seed --profile dev
+
+.PHONY: auth-mail
+auth-mail: ## Deliver a bounded batch of pending recovery/verification mail per tenant.
+	cd $(BACKEND) && $(PY) -m app.workers.auth_mail

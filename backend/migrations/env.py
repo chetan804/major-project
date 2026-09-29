@@ -42,7 +42,9 @@ settings = get_settings()
 #: test suite uses this to migrate its own isolated database, and an operator can
 #: target a recovery instance without touching `.env`.
 migration_url = os.environ.get("ALEMBIC_DATABASE_URL") or settings.migration_database_url
-config.set_main_option("sqlalchemy.url", migration_url)
+# ConfigParser treats '%' as interpolation. URL-encoded socket paths and
+# passwords must survive its round trip unchanged.
+config.set_main_option("sqlalchemy.url", migration_url.replace("%", "%%"))
 
 # Import every model module so that `Base.metadata` is complete. Without this,
 # autogenerate would compare the database against an empty metadata and produce a

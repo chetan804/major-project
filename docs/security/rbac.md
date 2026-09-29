@@ -37,13 +37,33 @@ stops assigned to them, not every bin in the tenant.
 
 | Point | Mechanism |
 |---|---|
-| Route declaration | Each endpoint declares `required_permissions=[...]` via dependency; a startup self-check fails the app if any endpoint declares none (BR-12). |
+| Route declaration | Each endpoint declares `required_permissions=[...]` via dependency; startup inspects mounted/hidden routes and fails on missing/unknown declarations, except reasoned public and authenticated self-service operations (BR-12, ADR-0023). |
 | Service guard | Service methods that must be safe even when called from another module or a job call `authorization.require(ctx, "permission")`. |
 | Platform role separation | `SUPER_ADMIN` permissions are `scope=PLATFORM`; they are disjoint from tenant permissions and cannot be granted to a tenant role (`CHECK` on the seeded data + service validation). |
 
 Frontend route guards and hidden buttons are **supplementary UX only**. Every
 one of them has a corresponding backend test proving the API refuses the call
 when the permission is absent.
+
+### Administration implementation (2026-09-29)
+
+`services/identity.py` checks every operation independently of the route. Writes
+lock the tenant before user rows, then resolve the caller's grants again.
+Permission sets, not role names or numeric levels, govern privilege escalation.
+Platform/device/model-promotion capabilities cannot be granted through tenant
+role editing. Deactivating/deleting privileged users and editing existing roles
+also require elevation authority when their permissions exceed the caller's.
+
+At least one active, nondeleted user must retain non-expiring grants collectively
+covering `users.read`, `users.write`, `roles.read`, `roles.write`, `roles.assign`
+and `roles.assign.elevate`. Account removal, grant expiry/revocation and role
+permission replacement enforce this invariant atomically (ADR-0015).
+
+`test_identity_admin.py` covers the nine tenant roles against every new route
+and verifies allowed writes separately. Tenant identity in the implemented API
+comes from the signed token and matching session/user records; the multi-tenant
+header selection and break-glass model below remains a target design, not a
+currently implemented bypass.
 
 ### 1.2 Tenant context rules
 
@@ -165,6 +185,7 @@ sensitive).
 ### Platform (SUPER_ADMIN only — `scope=PLATFORM`, never grantable to tenants)
 | Code | Gates |
 |---|---|
+| `platform.operators.read` / `platform.operators.write` | own-realm operator lifecycle; mandatory strong proof for writes |
 | `platform.tenants.read` / `platform.tenants.write` | tenant provisioning & suspension |
 | `platform.system_settings.write` | global settings |
 | `platform.models.manage` | platform-provided model registry |
@@ -311,3 +332,92 @@ matrix fails the build. The suite additionally proves:
 6. Role escalation: a `DISPATCHER` attempting `POST /users/{id}/roles` with a
    role above their own level → `403` (`roles.assign.elevate` missing).
 7. Every registered route declares a permission requirement (BR-12).
+
+### Security administration implementation (2026-09-29)
+
+`GET /audit-logs` and detail require `audit.read`, including custom auditor roles;
+no user-management permission is additionally required. Successful reads are
+recorded before responding. Tenant-wide `GET /sessions` requires `sessions.read`.
+`DELETE /sessions/{id}` and `POST /users/{id}/sessions/revoke-all` require
+`sessions.revoke`; targeting a more privileged user also requires
+`roles.assign.elevate`. Own-session `/auth/sessions` remains available to any
+live authenticated user. No existing seeded permission bundles were changed.
+See `../api/security-administration.md` and ADR-0017 for cursor, privacy,
+concurrency and runtime database privilege requirements.
+
+### API-key delegation implementation (2026-09-29)
+
+`apikeys.read` gates metadata and the device-scope catalogue; `apikeys.write`
+permits create, rotate and revoke across the current tenant, through live human
+bearer sessions only. No seeded role changed. The explicit machine allowlist is
+currently only `bins.telemetry.ingest`; it never includes human identity/platform
+permissions, even if the provisioning human holds them. Rotation may not expand
+scopes. Machine principals inherit no roles and cannot administer keys.
+
+`apikeys.write` is an explicit device-provisioning delegation capability: unlike
+an ordinary human JWT, a compromised provisioning administrator **can mint a
+machine credential**. Earlier statements about human sessions not forging
+telemetry refer to direct human authentication, not this privileged delegation.
+Device HTTP ingestion is still planned. Tenant-owned keys persist independently
+of creator status/grants and must be explicitly revoked during relevant offboarding.
+See `../api/api-keys.md` and ADR-0018 for the complete contract.
+
+### Platform control-plane implementation (2026-09-29)
+
+ADR-0019 implements six `/platform/tenants` operations with the existing
+`platform.tenants.read/write` capabilities, reserved platform scope and live human
+session checks. No new permissions or seeded-role changes. Permission resolution
+now filters by PermissionScope: tenant grants cannot acquire platform authority,
+and platform users do not inherit tenant permissions from shared role templates.
+Both invitation aliases also take the live tenant/caller administration mutex.
+
+Initial operator enrollment is offline/interactive and refuses any existing platform
+account rather than repairing access. The API can create a new tenant's initial
+invited administrator but cannot replace an existing tenant administrator. Suspend
+revokes human sessions/codes; activate does not restore them. Device keys are paused
+by tenant status, not permanently revoked. Customer data and platform audit browsing
+remain outside this surface. Break-glass is **not implemented**; no header or
+permission turns a platform bearer into a tenant actor. See `../api/platform-tenants.md`.
+
+### Platform password confirmation (2026-09-29)
+
+ADR-0020 adds POST/DELETE `/platform/auth/step-up`, gated by existing
+`platform.tenants.write` and live human platform identity. The four registry
+mutations require a five-minute, session-bound server-side password confirmation;
+no capability, JWT claim or role grant is added. Existing sessions, new logins and
+refresh replacements are unconfirmed. Password changes clear proof even on the
+kept session. Reads remain permission-gated without confirmation. Password failures
+share lockout and audit; HTTP attempts have fail-closed IP/account budgets.
+
+The unenrolled password-only flow is **not MFA** and cannot authorize break-glass.
+ADR-0021 adds opt-in action MFA: the same writer permission gates five own-factor
+lifecycle routes, while enrolled registry writers require password+TOTP/recovery
+confirmation bound to the active factor. Password reset cannot disable this factor.
+Login-wide MFA and break-glass remain unimplemented. See `../api/platform-mfa.md`. See
+`../api/platform-step-up.md` for scope, migration and rollout/rollback requirements.
+
+
+### MFA-protected operator lifecycle (2026-09-29, ADR-0022)
+
+`platform.operators.read/write` are PLATFORM-scoped, shared SUPER_ADMIN-only baseline
+grants. Reads expose only reserved-realm operator metadata. Every lifecycle mutation
+requires current factor-bound MFA, independently of legacy registry policy; invitation
+also requires the full platform grant set and an exact reviewed role template.
+HTTP invitees have required action MFA; `require-mfa` can tighten but not relax legacy
+policy. Suspension serializes a last-permanent-MFA-manager invariant, revokes sessions
+and pending authority, and retains active factors/codes. Reactivation does not assert
+mailbox verification or restore sessions. No role editor, all-factor-loss recovery,
+platform audit reader or break-glass is added. See `../api/platform-operators.md`.
+
+
+### Phase 2 startup closure (ADR-0023)
+
+`api/route_policy.py` is the production deny-by-default inventory. It checks actual
+nested/include-time dependencies, not OpenAPI visibility or endpoint annotations.
+Exactly six public credential/recovery operations and eight authenticated own-data
+operations have written exceptions; all other versioned operations declare known
+permissions and real actor authentication. Unknown permissions, duplicate paths
+(including renamed parameters) and unreviewed mounts/WebSockets refuse startup.
+The ten roles are tested against every one of 46 mounted permission gates (460
+cases), alongside real restricted-role service/HTTP/RLS tests. Gate allowance does
+not replace live grants, resource state, tenant checks or MFA. See the Phase 2 report.

@@ -25,7 +25,18 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import auth
+from app.api.v1 import (
+    api_keys,
+    auth,
+    platform_mfa,
+    platform_operators,
+    platform_step_up,
+    platform_tenants,
+    roles,
+    security_administration,
+    tenants,
+    users,
+)
 
 __all__ = ["api_v1_router"]
 
@@ -35,3 +46,20 @@ api_v1_router = APIRouter()
 # it produces. Later phases add their routers here in the order the phase plan
 # lists them.
 api_v1_router.include_router(auth.router)
+
+api_v1_router.include_router(users.router)
+api_v1_router.include_router(roles.router)
+api_v1_router.include_router(tenants.router)
+
+api_v1_router.include_router(security_administration.router)
+
+api_v1_router.include_router(api_keys.router)
+
+api_v1_router.include_router(platform_tenants.router)
+
+
+api_v1_router.include_router(platform_step_up.router)
+
+api_v1_router.include_router(platform_mfa.router)
+
+api_v1_router.include_router(platform_operators.router)

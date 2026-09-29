@@ -21,6 +21,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.time import utc_now
+from app.db.base import PLATFORM_SCOPE_ID
+from app.models._enums import PermissionScope
 from app.models.identity import Permission, Role, RolePermission, UserRole
 
 __all__ = ["resolve_permissions"]
@@ -45,11 +47,22 @@ async def resolve_permissions(
     statement = (
         select(Role.code, Permission.code)
         .join(UserRole, UserRole.role_id == Role.id)
-        .join(
+        .outerjoin(
             RolePermission,
             (RolePermission.role_id == Role.id) & (RolePermission.tenant_id == Role.tenant_id),
         )
-        .join(Permission, Permission.id == RolePermission.permission_id)
+        .outerjoin(
+            Permission,
+            (Permission.id == RolePermission.permission_id)
+            & (
+                Permission.scope
+                == (
+                    PermissionScope.PLATFORM
+                    if tenant_id == PLATFORM_SCOPE_ID
+                    else PermissionScope.TENANT
+                )
+            ),
+        )
         .where(
             UserRole.user_id == user_id,
             UserRole.tenant_id == tenant_id,
@@ -61,5 +74,6 @@ async def resolve_permissions(
     permission_codes: set[str] = set()
     for role_code, permission_code in (await session.execute(statement)).all():
         role_codes.add(str(role_code))
-        permission_codes.add(str(permission_code))
+        if permission_code is not None:
+            permission_codes.add(str(permission_code))
     return frozenset(role_codes), frozenset(permission_codes)

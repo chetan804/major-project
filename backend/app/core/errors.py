@@ -40,6 +40,7 @@ from fastapi import status
 __all__ = [
     "AppError",
     "AuthenticationError",
+    "AuthenticationStateChangedError",
     "BusinessRuleError",
     "ConflictError",
     "DependencyUnavailableError",
@@ -226,6 +227,8 @@ _FORBIDDEN_DETAIL_KEYS = frozenset(
         "api_key",
         "apikey",
         "jwt_secret_key",
+        "auth_mail_encryption_key",
+        "encrypted_payload",
         "cookie",
         "set-cookie",
         "smtp_password",
@@ -351,6 +354,16 @@ class AuthenticationError(AppError):
         **details: Any,
     ) -> None:
         super().__init__(code=code, message=message, details=details)
+
+
+class AuthenticationStateChangedError(AuthenticationError):
+    """Authentication denied after a security write that must survive the denial.
+
+    Only failed-attempt counters, denial audit rows and replay revocations may
+    use this signal. The request unit of work commits it before returning the
+    error; every other exception still rolls back. Non-HTTP callers must do the
+    same. Never raise this after partially applying a business operation.
+    """
 
 
 class PermissionDeniedError(AppError):

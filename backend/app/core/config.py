@@ -19,6 +19,7 @@ Design notes
 
 from __future__ import annotations
 
+import base64
 import functools
 from typing import Literal
 
@@ -98,11 +99,20 @@ class Settings(BaseSettings):
     argon2_memory_cost_kib: int = Field(default=65536, ge=8192)
     argon2_parallelism: int = Field(default=2, ge=1, le=8)
 
+    mfa_encryption_key: str = Field(default="", repr=False)
+
     # -- Cache / queue ------------------------------------------------------
     redis_url: str = "redis://localhost:6379/0"
     redis_adapter: CacheAdapter = "redis"
     cache_ttl_seconds: int = Field(default=60, ge=1)
     rate_limit_enabled: bool = True
+    auth_ip_limit: int = Field(default=60, ge=1, le=10000)
+    auth_account_limit: int = Field(default=10, ge=1, le=1000)
+    auth_account_window_seconds: int = Field(default=900, ge=1, le=86400)
+    recovery_ip_limit: int = Field(default=20, ge=1, le=1000)
+    recovery_account_limit: int = Field(default=3, ge=1, le=100)
+    recovery_window_seconds: int = Field(default=3600, ge=1, le=86400)
+    auth_rate_limit_max_keys: int = Field(default=10000, ge=10, le=1000000)
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
     job_runner: JobRunner = "inline"
@@ -139,6 +149,11 @@ class Settings(BaseSettings):
     weather_provider: WeatherProvider = "local_synthetic"
     weather_provider_api_key: str = ""
     email_provider: EmailProvider = "console"
+    auth_delivery_enabled: bool = False
+    auth_mail_encryption_key: str = Field(default="", repr=False)
+    auth_mailbox_root: str = ".runtime/auth-mail"
+    auth_mail_max_attempts: int = Field(default=5, ge=1, le=10)
+    smtp_timeout_seconds: int = Field(default=10, ge=1, le=60)
     smtp_host: str = ""
     smtp_port: int = Field(default=587, ge=1, le=65535)
     smtp_username: str = ""
@@ -197,6 +212,20 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------------
     # Startup validation
     # ---------------------------------------------------------------------
+    def mfa_key_reused(self) -> bool:
+        """Reject literal reuse and equivalent base64 forms of other key material."""
+        for other in (self.jwt_secret_key, self.auth_mail_encryption_key):
+            if self.mfa_encryption_key == other:
+                return True
+            try:
+                if base64.urlsafe_b64decode(self.mfa_encryption_key) == base64.urlsafe_b64decode(
+                    other
+                ):
+                    return True
+            except (ValueError, TypeError):
+                pass  # Key syntax is validated separately; JWT need not be base64.
+        return False
+
     def validate_for_startup(self) -> list[str]:
         """
         Return a list of fatal configuration problems, empty when healthy.
@@ -267,6 +296,52 @@ class Settings(BaseSettings):
                 "'noop' or add the adapter (see docs/architecture/decisions.md)."
             )
 
+        if self.mfa_encryption_key:
+            from cryptography.fernet import Fernet
+
+            if self.mfa_key_reused():
+                problems.append("MFA_ENCRYPTION_KEY must be distinct from JWT and mail keys.")
+            try:
+                Fernet(self.mfa_encryption_key.encode())
+            except (ValueError, TypeError):
+                problems.append("MFA_ENCRYPTION_KEY must be a valid Fernet key when configured.")
+
+        if self.auth_delivery_enabled:
+            from email.headerregistry import Address
+
+            from cryptography.fernet import Fernet
+
+            try:
+                sender = Address(addr_spec=self.smtp_from_address)
+                if not sender.username or not sender.domain:
+                    raise ValueError("Missing sender parts")
+            except (ValueError, IndexError):
+                problems.append("SMTP_FROM_ADDRESS must be a single mailbox address.")
+            if self.email_provider == "smtp" and bool(self.smtp_username) != bool(
+                self.smtp_password
+            ):
+                problems.append("SMTP_USERNAME and SMTP_PASSWORD must be configured together.")
+
+            if (
+                self.auth_mail_encryption_key
+                and self.auth_mail_encryption_key == self.jwt_secret_key
+            ):
+                problems.append("AUTH_MAIL_ENCRYPTION_KEY must be distinct from JWT_SECRET_KEY.")
+            try:
+                Fernet(self.auth_mail_encryption_key.encode())
+            except (ValueError, TypeError):
+                problems.append(
+                    "AUTH_MAIL_ENCRYPTION_KEY must be a valid Fernet key when delivery is enabled."
+                )
+            if self.environment in ("staging", "production") and self.email_provider != "smtp":
+                problems.append(
+                    "Account recovery requires EMAIL_PROVIDER=smtp outside development/test."
+                )
+        if self.is_production and (not self.rate_limit_enabled or self.redis_adapter != "redis"):
+            problems.append(
+                "Production authentication requires enabled rate limits backed by real Redis."
+            )
+
         return problems
 
     def adapter_summary(self) -> dict[str, object]:
@@ -323,7 +398,18 @@ class Settings(BaseSettings):
                     else "Hosted OpenAI-compatible endpoint."
                 ),
             },
-            "email": {"backend": self.email_provider, "is_simulated": False},
+            "email": {
+                "backend": "local_mailbox" if self.email_provider == "console" else "smtp",
+                "is_simulated": self.email_provider == "console",
+                "recovery_delivery_enabled": self.auth_delivery_enabled,
+                "note": "Recovery uses a durable encrypted outbox; run the auth-mail worker. Local mail is not delivered externally.",
+            },
+            "auth_rate_limits": {
+                "backend": "redis" if self.redis_adapter == "redis" else "memory",
+                "is_simulated": self.redis_adapter != "redis",
+                "enabled": self.rate_limit_enabled,
+                "fail_closed": True,
+            },
             "sms": {
                 "backend": self.sms_provider,
                 "is_simulated": True,
