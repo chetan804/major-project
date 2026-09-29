@@ -877,7 +877,8 @@ Phase 2's written exit gate requires a startup self-check, not only test-time ro
 classification. Add a production API-layer policy inventory executed during lifespan
 before database/cache/counter resources initialize. Inspect effective mounted routes,
 including hidden routes, nested include prefixes and include-time dependencies. Reject
-unknown permissions, duplicate/shadowing method/path registrations, unclassified routes,
+unknown permissions, duplicate method/path registrations (including parameter-name
+aliases, not arbitrary regex-overlap analysis), unclassified routes,
 permission declarations lacking real authentication, and unsupported ASGI mounts or
 WebSockets instead of silently excluding them. Route registration after startup is not
 supported; new transports need a reviewed policy before introduction.

@@ -43,13 +43,22 @@ async def test_concurrent_checks_enforce_exact_limit(kind):
 async def test_counter_keys_are_hmac_digests_and_scoped():
     counter = MemoryCounter()
     limiter = AuthRateLimiter(counter, secrets.token_urlsafe(32))
-    await limiter.check("login", ("tenant-a", "private@example.test"), 1, 60)
-    await limiter.check("login", ("tenant-b", "private@example.test"), 1, 60)
-    await limiter.check("reset", ("tenant-a", "private@example.test"), 1, 60)
+    # These are HMAC identity inputs, not login credentials. Generate them so
+    # generic authentication-tuple detectors cannot mistake literals for secrets.
+    tenant_a, tenant_b = (f"tenant-{secrets.token_hex(8)}" for _ in range(2))
+    email = f"private-{secrets.token_hex(8)}@example.test"
+    await limiter.check("login", (tenant_a, email), 1, 60)
+    await limiter.check("login", (tenant_b, email), 1, 60)
+    await limiter.check("reset", (tenant_a, email), 1, 60)
     assert len(counter.entries) == 3
-    assert all("private" not in key and "tenant" not in key for key in counter.entries)
+    assert all(
+        not any(
+            identifier in key for identifier in (tenant_a, tenant_b, email, "private", "tenant")
+        )
+        for key in counter.entries
+    )
     with pytest.raises(RateLimitError):
-        await limiter.check("login", ("tenant-a", "private@example.test"), 1, 60)
+        await limiter.check("login", (tenant_a, email), 1, 60)
 
 
 async def test_memory_capacity_fails_closed_without_evicting_live_limits():

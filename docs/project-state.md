@@ -568,7 +568,12 @@ must be wrapped in `Depends(...)` explicitly — see `app/api/deps.py`.
   101 permissions/322 baseline grants. Evidence `.runtime/phase2-final-gate.log`.
 * Committed the accumulated delivery as `09505d2`, pushed the session branch and
   opened PR **#4** against `main`. Hosted CI is tracked on the PR separately from
-  the local gate; this documentation follow-up records the actual delivery link.
+  the local gate. Hosted lint/type/secret and PostgreSQL test jobs passed on
+  `dcc7323` ([run 36609556120](https://github.com/chetan804/major-project/actions/runs/36609556120)).
+  GitGuardian separately classified two literal HMAC test identity tuples as generic
+  authentication secrets; they were never service credentials. The follow-up generates
+  those identity fixtures at runtime without weakening the assertions or suppressing
+  detectors. The PR checks show the result for the latest revision.
 * Updated phase status, requirements traceability, gate evidence and PR scope. No
   production SMTP/Redis/load, frontend, container or emergency-access claim. Pending
   privileged features remain unavailable and do not block the original Phase 2 gate.
