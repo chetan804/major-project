@@ -17,7 +17,7 @@ Update it at the end of every working session (section 76).
 | Baseline commit | `d34fda2` (merged Phase 2 foundation) |
 | Architecture status | Coherent and complete at design level; no known blocking open question |
 | Gate status | lint, format, mypy, secret scan and migration drift all clean; **1638 passed, 6 skipped** |
-| Open PR | Phase 2 PR being prepared from the session branch; see final session handoff |
+| Open PR | [#4 — Complete Phase 2](https://github.com/chetan804/major-project/pull/4), from this branch into `main`; hosted checks are authoritative on the PR |
 
 ---
 
@@ -566,6 +566,9 @@ must be wrapped in `Depends(...)` explicitly — see `app/api/deps.py`.
   files, migration drift and tracked/staged secret scan clean. No new migration or
   endpoint in this closure: head `e1c3617bfb4c`, 60 operations, 85 tables/74 policies,
   101 permissions/322 baseline grants. Evidence `.runtime/phase2-final-gate.log`.
+* Committed the accumulated delivery as `09505d2`, pushed the session branch and
+  opened PR **#4** against `main`. Hosted CI is tracked on the PR separately from
+  the local gate; this documentation follow-up records the actual delivery link.
 * Updated phase status, requirements traceability, gate evidence and PR scope. No
   production SMTP/Redis/load, frontend, container or emergency-access claim. Pending
   privileged features remain unavailable and do not block the original Phase 2 gate.

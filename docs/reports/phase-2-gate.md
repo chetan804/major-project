@@ -2,6 +2,7 @@
 
 **Decision: COMPLETE against the Phase 2 build/test/gate in `docs/phases.md`.**
 **Date:** 2026-09-29. **Branch:** `arena/01a0eaec-major-project`.
+**Pull request:** [#4](https://github.com/chetan804/major-project/pull/4).
 **Baseline:** `d34fda2`; this report covers the accumulated Phase 2 work after that
 foundation, not just the final startup-policy change. Phase 3 is next, not started.
 
