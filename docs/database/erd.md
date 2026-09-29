@@ -868,8 +868,21 @@ tenants ─┬─< users ─┬─< sessions
 
 ## Appendix A — Plan vs implemented status
 
-Updated at each phase gate; a schema change requires a migration, never a
-manual edit.
+A schema change requires a migration, never a manual database edit. The table
+below retains the original conceptual phase plan; it is not today's physical
+table inventory. As of 2026-09-29, the ORM/migrations implement **85 tables**, 74
+with forced tenant RLS. Domain APIs beyond identity remain planned; see
+`../project-state.md` for the current implementation inventory.
+
+Revision `0a396e61910c` adds `users.email_verification_token_hash` and
+`users.email_verification_expires_at`, plus tenant-scoped `auth_mail_outbox`:
+UUID id/user/tenant FKs; purpose; PENDING/SENT/FAILED/CANCELLED state;
+Fernet-encrypted payload; expiry, attempts, next-attempt and sent timestamps;
+sanitized error category; standard creation/update timestamps. Its due index is
+`(tenant_id, status, next_attempt_at)`. Terminal rows have their ciphertext
+cleared. Delivery/rotation/rollback semantics are in `../api/account-recovery.md`.
+Downgrade removes the outbox and outstanding verification credentials, not users
+or audit history.
 
 | Area | Tables | Status |
 |---|---|---|
@@ -881,6 +894,25 @@ manual edit.
 | Facilities/loads/recovery/env | 11 | planned (Phase 7–10) |
 | Intelligence | 12 | planned (Phase 8–9) |
 | Notifications/reporting/integration | 13 | planned (Phase 11) |
+
+Revision `ca9642749b58` changes indexes only: audit paging uses
+`(tenant_id, created_at DESC, id DESC)` and session paging gains
+`(tenant_id, issued_at DESC, id DESC)`. Upgrade/downgrade preserve all rows;
+ordinary index DDL can block writes on a populated deployment.
+
+Revision `600bc6193a23` adds `audit_logs.actor_api_key_id` (nullable FK to
+`api_keys`, SET NULL on deletion, indexed), key tenant/creation paging, and a
+unique partial index on non-null `rotation_of_id`. There are still 85 tables/74
+forced tenant policies. Downgrade archives machine actor UUIDs in reserved audit
+metadata `_machine_actor_ref_v1`; re-upgrade restores same-tenant surviving-key
+references. No keys/events are deleted. See `../api/api-keys.md` for rollback,
+legacy-key and deployment requirements.
+
+Revision `1eb8da7c2793` adds nullable `sessions.platform_reauthenticated_at` for
+explicit five-minute platform password confirmation. Existing/re-upgraded sessions
+start unconfirmed. Downgrade discards ephemeral authority but retains audit evidence.
+Table/policy counts remain 85/74; see `../api/platform-step-up.md` for matched
+application/schema deployment and rollback precautions.
 
 **Known schema limitations (disclosed, not hidden):**
 
@@ -895,3 +927,30 @@ manual edit.
    later is a mechanical change.
 3. Audit log archival targets local storage in development; production requires
    the configured object-store provider.
+
+
+### Platform action MFA (ADR-0021)
+
+Revision `c4195297efc7` adds nullable User `mfa_factor_id`, `mfa_last_counter`
+(BIGINT), `mfa_recovery_hashes` (JSONB), `mfa_pending_secret_encrypted`,
+`mfa_pending_session_id`, `mfa_pending_expires_at`, and Session
+`platform_mfa_factor_id` / `platform_mfa_verified_at`. The existing
+`users.mfa_secret_encrypted` now holds a principal/factor-bound encrypted TOTP seed.
+Pending session identity is service-checked, not a new FK. Activation/recovery
+rotation invalidates all leases. Password changes/reset retain the active factor.
+No table/policy count change (85/74). Downgrade locks and refuses while any MFA
+state remains; old application code must not serve platform writes during rollout
+or rollback. See `../api/platform-mfa.md` for custody and compatibility limits.
+
+
+### Required platform MFA policy (ADR-0022)
+
+Revision `e1c3617bfb4c` adds `users.platform_mfa_required BOOLEAN NOT NULL DEFAULT
+false` and seeds two PLATFORM-scoped operator permissions into shared SUPER_ADMIN
+only. HTTP operator invitations set the policy true; no API unsets it. Password
+reset/change and operator suspension retain it. Downgrade refuses while any true
+policy remains, removes the two grants/definitions only on safe rollback and
+retains audit history. Migration transactions commit per revision; a lower MFA
+guard can stop a multi-revision downgrade after this revision has completed.
+Counts remain 85 tables / 74 forced policies; catalogue becomes 101 permissions /
+322 baseline grants. See `../api/platform-operators.md` for application compatibility.

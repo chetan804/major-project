@@ -14,9 +14,8 @@ a decision someone could otherwise "simplify" away:
   which case it was either.
 * **Failed attempts are counted and the account locks.** The counter lives on the
   user row rather than in a cache, so a lockout survives a restart.
-* **Refresh tokens rotate on use, and replay revokes the family.** A refresh token
-  presented twice can only have been stolen, so the whole rotation family is
-  revoked and the legitimate user has to sign in again.
+* **Refresh tokens rotate on use, and replay revokes the family.** A lost-response
+  retry cannot be distinguished from theft, so either requires a new sign-in.
 
 Password reset works the same way as refresh tokens: the token is stored as a hash,
 so a database disclosure yields no usable credential.
@@ -32,8 +31,11 @@ from uuid import UUID, uuid4
 
 from argon2 import PasswordHasher
 from argon2.exceptions import Argon2Error, InvalidHashError
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
+from app.authorization.api_keys import API_KEY_SCOPES, api_key_prefix
+from app.authorization.checks import ensure_permission, ensure_tenant_match
 from app.authorization.context import Actor
 from app.authorization.resolution import resolve_permissions
 from app.authorization.tokens import (
@@ -41,11 +43,13 @@ from app.authorization.tokens import (
     generate_refresh_token,
     hash_token,
     new_session_id,
+    refresh_token_tenant,
     tokens_match,
 )
 from app.core.config import Settings
 from app.core.errors import (
     AuthenticationError,
+    AuthenticationStateChangedError,
     BusinessRuleError,
     ConflictError,
     ErrorCode,
@@ -54,7 +58,9 @@ from app.core.errors import (
 )
 from app.core.logging import get_logger
 from app.core.time import utc_now
-from app.models._enums import UserStatus
+from app.db.base import PLATFORM_SCOPE_ID
+from app.db.rls import apply_tenant_context
+from app.models._enums import TenantStatus, UserStatus
 from app.models.identity import Session, Tenant, User
 from app.repositories.identity import (
     ApiKeyRepository,
@@ -63,6 +69,8 @@ from app.repositories.identity import (
     TenantRepository,
     UserRepository,
 )
+from app.services.auth_delivery import AuthDelivery
+from app.services.identity import IdentityService
 
 __all__ = [
     "MAX_FAILED_LOGINS",
@@ -144,6 +152,31 @@ class AuthService:
         self.audit = audit
         self.tenants = tenants
 
+    async def _bind_tenant(self, tenant_id: UUID) -> None:
+        """Bind RLS and all scoped repositories before reading protected rows."""
+        session = self.users.session
+        await apply_tenant_context(session, tenant_id)
+        self.users = UserRepository(session, tenant_id)
+        self.sessions = SessionRepository(session, tenant_id)
+        self.audit = AuditLogRepository(session, tenant_id)
+
+    async def _tenant_is_enabled(self, tenant_id: UUID) -> bool:
+        # User-lock waiters must not trust a tenant loaded before suspension.
+        tenant = (
+            await self.users.session.execute(
+                select(Tenant)
+                .where(Tenant.id == tenant_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        return tenant is not None and _tenant_enabled(tenant)
+
+    async def _require_enabled_tenant(self, tenant_id: UUID) -> None:
+        if not await self._tenant_is_enabled(tenant_id):
+            raise AuthenticationError(
+                code=ErrorCode.ACCOUNT_SUSPENDED, message="This account cannot sign in."
+            )
+
     # -- password handling ---------------------------------------------------
     def _hasher(self) -> PasswordHasher:
         """A hasher configured from settings. Cheap and stateless, so per call."""
@@ -215,19 +248,21 @@ class AuthService:
         actor: Actor,
         ip_address: str | None = None,
         user_agent: str | None = None,
-    ) -> AuthenticatedUser:
+    ) -> User:
         """
-        Create a user in the actor's own tenant and sign them in.
+        Create an invited user; activation is separate and issues no session.
 
         Registration is invitation-based: the router requires ``users.write``,
-        which is what stops the public internet from creating accounts inside a
-        municipality. This method therefore trusts the caller and records who it
-        was, rather than re-checking.
+        which is checked again here so a non-HTTP caller cannot bypass it.
 
         Plain arguments rather than a request model, so the service does not depend
         on the API layer's schema package: the same call is available to a CLI and
         to a test without either importing FastAPI types.
         """
+        ensure_permission(actor, "users.write")
+        ensure_tenant_match(actor, self.users.tenant_id, resource_type="tenant")
+        await self._bind_tenant(actor.tenant_id)
+        actor = await IdentityService(self.users.session, actor).authorize_invitation()
         normalised = email.strip().lower()
         if await self.users.get_by_email(normalised) is not None:
             raise ConflictError(
@@ -235,13 +270,21 @@ class AuthService:
                 details={"field": "email"},
             )
 
-        user = await self.users.create(
-            email=normalised,
-            password_hash=self.hash_password(password),
-            full_name=full_name.strip(),
-            phone=phone,
-            status=UserStatus.INVITED,
-        )
+        try:
+            async with self.users.session.begin_nested():
+                user = await self.users.create(
+                    email=normalised,
+                    password_hash=self.hash_password(password),
+                    full_name=full_name.strip(),
+                    phone=phone,
+                    status=UserStatus.INVITED,
+                )
+        except IntegrityError as exc:
+            # Email remains reserved after soft deletion. The unique constraint
+            # also closes the race between simultaneous invitations.
+            if "uq_users_tenant_email" not in str(exc.orig):
+                raise
+            raise ConflictError(message="This email is already reserved in this tenant.") from exc
         await self.audit.record(
             action="user.create",
             actor=actor,
@@ -256,7 +299,7 @@ class AuthService:
             user_agent=user_agent,
         )
         logger.info("user registered", user_id=str(user.id), tenant_id=str(actor.tenant_id))
-        return await self._issue_session(user, user_agent=user_agent, ip_address=ip_address)
+        return user
 
     # -- sign-in -------------------------------------------------------------
     async def authenticate(
@@ -284,23 +327,30 @@ class AuthService:
 
         tenant = await self.tenants.get_by_slug(tenant_slug.strip().lower())
         if tenant is None:
+            self.verify_password(password, _dummy_hash())
+            await self._bind_tenant(self.users.tenant_id)
             await self._audit_failed_login(None, email, ip_address, user_agent)
-            raise self._invalid_credentials()
+            raise AuthenticationStateChangedError(
+                code=ErrorCode.INVALID_CREDENTIALS, message="Email or password is incorrect."
+            )
+        await self._bind_tenant(tenant.id)
 
         # A repository is per-tenant, so the lookup is built for the tenant the
         # caller named — deliberately not the injected one, which belongs to
         # whatever tenant the *caller* is in.
-        user = await UserRepository(self.users.session, tenant.id).get_by_email(email)
+        user = await self.users.get_by_email(email, for_update=True)
         if user is None:
             # Verify against a dummy hash so "no such user" costs the same as
             # "wrong password" and the timing does not give the answer away.
             self.verify_password(password, _dummy_hash())
             await self._audit_failed_login(None, email, ip_address, user_agent)
-            raise self._invalid_credentials()
+            raise AuthenticationStateChangedError(
+                code=ErrorCode.INVALID_CREDENTIALS, message="Email or password is incorrect."
+            )
 
         if user.locked_until is not None and user.locked_until > utc_now():
             await self._audit_failed_login(user.id, email, ip_address, user_agent)
-            raise AuthenticationError(
+            raise AuthenticationStateChangedError(
                 code=ErrorCode.ACCOUNT_LOCKED,
                 message="This account is temporarily locked after too many failed attempts.",
             )
@@ -308,12 +358,15 @@ class AuthService:
         if not self.verify_password(password, user.password_hash):
             await self._register_failed_attempt(user)
             await self._audit_failed_login(user.id, email, ip_address, user_agent)
-            raise self._invalid_credentials()
+            raise AuthenticationStateChangedError(
+                code=ErrorCode.INVALID_CREDENTIALS, message="Email or password is incorrect."
+            )
 
-        if user.status is UserStatus.SUSPENDED:
+        await self._require_enabled_tenant(tenant.id)
+        if user.status is not UserStatus.ACTIVE:
             raise AuthenticationError(
                 code=ErrorCode.ACCOUNT_SUSPENDED,
-                message="This account has been suspended.",
+                message="This account cannot sign in.",
             )
 
         user.failed_login_attempts = 0
@@ -324,7 +377,7 @@ class AuthService:
 
         await self.audit.record(
             action="user.login",
-            actor=user,
+            actor=AnonymousActor(user_id=user.id),
             resource_type="user",
             resource_id=str(user.id),
             ip_address=ip_address,
@@ -383,7 +436,7 @@ class AuthService:
     ) -> AuthenticatedUser:
         """Create the session row and the token pair that belongs to it."""
         session_id = new_session_id()
-        refresh_token = generate_refresh_token()
+        refresh_token = generate_refresh_token(user.tenant_id)
         now = utc_now()
         refresh_expires = now + timedelta(days=self.settings.refresh_token_expire_days)
 
@@ -436,6 +489,7 @@ class AuthService:
             full_name=user.full_name,
             permissions=permission_codes,
             roles=role_codes,
+            is_platform_operator=user.tenant_id == PLATFORM_SCOPE_ID,
         )
 
     # -- refresh and revocation ---------------------------------------------
@@ -443,59 +497,84 @@ class AuthService:
         """
         Exchange a refresh token for a new pair, rotating the old one.
 
-        A replay revokes the whole family. The only honest explanation for a token
-        presented twice is that it was stolen, and keeping the newest session alive
-        would leave the attacker holding the working credential while the
-        legitimate user is locked out of the decision.
+        A replay revokes the whole family. A retry after a lost response is
+        indistinguishable from theft, so clients must serialize refresh calls and
+        sign in again after reuse. Old hash rows are retained as replay evidence.
         """
-        session = await self.sessions.find_by_refresh_hash(hash_token(refresh_token))
-        if session is None:
+        tenant_id = refresh_token_tenant(refresh_token)
+        await self._bind_tenant(tenant_id)
+        token_hash = hash_token(refresh_token)
+        old_session = await self.sessions.find_by_refresh_hash(token_hash)
+        if old_session is None:
             raise AuthenticationError(
-                code=ErrorCode.TOKEN_INVALID,
-                message="Refresh token is not valid.",
+                code=ErrorCode.TOKEN_INVALID, message="Refresh token is not valid."
             )
 
+        # All session mutations lock the user first. Locking only the presented
+        # token would let replay of an ancestor race rotation of its descendant.
+        user = await self.users.get_active(old_session.user_id, for_update=True)
+        old_session = await self.sessions.find_by_refresh_hash(token_hash)
+        if old_session is None:
+            raise AuthenticationError(code=ErrorCode.TOKEN_INVALID)
         now = utc_now()
-        if session.revoked_at is not None:
+        if old_session.revoked_at is not None:
             revoked = await self.sessions.revoke_family(
-                session.family_id, reason="refresh token replay detected"
+                old_session.family_id, reason="refresh token replay detected"
             )
-            logger.warning(
-                "refresh token replay detected; family revoked",
-                session_id=str(session.id),
-                revoked_sessions=revoked,
+            await self.audit.record(
+                action="user.refresh_reuse",
+                actor=AnonymousActor(old_session.user_id),
+                resource_type="session",
+                resource_id=str(old_session.id),
+                outcome="DENIED",
+                changes={"revoked_sessions": revoked},
             )
-            raise AuthenticationError(
+            raise AuthenticationStateChangedError(
                 code=ErrorCode.REFRESH_TOKEN_REUSED,
                 message="This refresh token has already been used. Sign in again.",
             )
-        if session.expires_at <= now:
+        if old_session.expires_at <= now:
             raise AuthenticationError(
-                code=ErrorCode.SESSION_REVOKED,
-                message="Session has expired. Sign in again.",
+                code=ErrorCode.SESSION_REVOKED, message="Session has expired. Sign in again."
             )
-
-        user = await self.users.get_active(session.user_id)
+        await self._require_enabled_tenant(tenant_id)
         if user is None or user.status is not UserStatus.ACTIVE:
             raise AuthenticationError(
-                code=ErrorCode.ACCOUNT_SUSPENDED,
-                message="This account cannot sign in.",
+                code=ErrorCode.ACCOUNT_SUSPENDED, message="This account cannot sign in."
+            )
+        if user.locked_until is not None and user.locked_until > now:
+            raise AuthenticationError(
+                code=ErrorCode.ACCOUNT_LOCKED, message="This account is temporarily locked."
             )
 
-        new_refresh = generate_refresh_token()
+        new_refresh = generate_refresh_token(tenant_id)
         new_expires = now + timedelta(days=self.settings.refresh_token_expire_days)
-        session.refresh_token_hash = hash_token(new_refresh)
-        session.previous_session_id = session.id
-        session.last_used_at = now
-        session.expires_at = new_expires
+        new_id = new_session_id()
+        old_session.revoked_at = now
+        old_session.revoked_reason = "refresh token rotated"
+        old_session.last_used_at = now
+        self.sessions.session.add(
+            Session(
+                id=new_id,
+                tenant_id=tenant_id,
+                user_id=user.id,
+                refresh_token_hash=hash_token(new_refresh),
+                family_id=old_session.family_id,
+                previous_session_id=old_session.id,
+                issued_at=now,
+                expires_at=new_expires,
+                user_agent=old_session.user_agent,
+                ip_address=old_session.ip_address,
+                last_used_at=now,
+            )
+        )
         await self.sessions.session.flush()
-
         access_token, access_expires = encode_access_token(
             secret_key=self.settings.jwt_secret_key,
             algorithm=self.settings.jwt_algorithm,
             subject=user.id,
-            tenant_id=user.tenant_id,
-            session_id=session.id,
+            tenant_id=tenant_id,
+            session_id=new_id,
             lifetime=timedelta(minutes=self.settings.access_token_expire_minutes),
         )
         return TokenPair(
@@ -503,17 +582,19 @@ class AuthService:
             access_token_expires_at=access_expires,
             refresh_token=new_refresh,
             refresh_token_expires_at=new_expires,
-            session_id=session.id,
+            session_id=new_id,
         )
 
     async def logout(self, session_id: UUID, *, actor: Actor) -> None:
-        """Revoke one session."""
+        """Revoke an owned session; invisible and foreign sessions are a 404."""
+        ensure_tenant_match(actor, self.users.tenant_id, resource_type="session")
+        await self.users.get_active(actor.user_id, for_update=True)
         session = await self.sessions.get(session_id)
-        if session is None:
-            return
-        session.revoked_at = utc_now()
-        session.revoked_reason = "user signed out"
-        await self.sessions.session.flush()
+        if session is None or session.user_id != actor.user_id:
+            raise NotFoundError(resource_type="session", resource_id=str(session_id))
+        # A family represents one signed-in device. If a refresh completed
+        # while logout waited for the user lock, its descendant must go too.
+        await self.sessions.revoke_family(session.family_id, reason="user signed out")
         await self.audit.record(
             action="user.logout",
             actor=actor,
@@ -529,6 +610,10 @@ class AuthService:
         except_session_id: UUID | None = None,
     ) -> int:
         """Revoke every live session for a user, optionally sparing the current one."""
+        ensure_tenant_match(actor, self.users.tenant_id, resource_type="user")
+        if actor.user_id != user_id:
+            raise NotFoundError(resource_type="user", resource_id=str(user_id))
+        await self.users.get_active(user_id, for_update=True)
         sessions = await self.sessions.list_for_user(user_id)
         now = utc_now()
         count = 0
@@ -564,12 +649,15 @@ class AuthService:
         when they suspect their account is compromised, and leaving the attacker's
         session alive would make the change useless.
         """
-        user = await self.users.get_active(actor.user_id)
+        ensure_tenant_match(actor, self.users.tenant_id, resource_type="user")
+        user = await self.users.get_active(actor.user_id, for_update=True)
         if user is None:
             raise NotFoundError(resource_type="user", resource_id=str(actor.user_id))
         if not self.verify_password(current_password, user.password_hash):
             await self._register_failed_attempt(user)
-            raise self._invalid_credentials()
+            raise AuthenticationStateChangedError(
+                code=ErrorCode.INVALID_CREDENTIALS, message="Email or password is incorrect."
+            )
         if new_password == current_password:
             raise BusinessRuleError(
                 rule_code="BR-PWD-01",
@@ -577,6 +665,20 @@ class AuthService:
             )
 
         user.password_hash = self.hash_password(new_password)
+        user.mfa_pending_secret_encrypted = None
+        user.mfa_pending_session_id = None
+        user.mfa_pending_expires_at = None
+        await self.users.session.execute(
+            update(Session)
+            .where(Session.tenant_id == user.tenant_id, Session.user_id == user.id)
+            .values(
+                platform_reauthenticated_at=None,
+                platform_mfa_verified_at=None,
+                platform_mfa_factor_id=None,
+            )
+        )
+        user.password_reset_token_hash = None
+        user.password_reset_expires_at = None
         user.failed_login_attempts = 0
         user.locked_until = None
         await self.users.session.flush()
@@ -595,44 +697,57 @@ class AuthService:
         """
         Start a password reset.
 
-        Returns the reset token, or ``None`` when no account matches. The caller
-        must not branch on the difference in its response: the endpoint always
-        answers "if that address has an account, a reset link is on its way",
-        because anything more specific is an account-enumeration oracle.
-
-        The token is *returned* rather than emailed because this deployment has no
-        outbound mail. A deployment with one passes it to the notification adapter
-        and returns ``None`` to the caller; the absence of the adapter is therefore
-        explicit in the code rather than hidden behind a silent no-op.
+        Hash storage, encrypted delivery payload and the audit record share the
+        caller's transaction. No external send occurs here. Returns the token only
+        to trusted internal callers/tests; the public API never serializes it.
+        Unknown/ineligible accounts return None and the API response is neutral.
         """
-        user = await UserRepository(self.users.session, tenant.id).get_by_email(email)
-        if user is None:
+        if tenant.deleted_at is not None or tenant.status not in (
+            TenantStatus.ACTIVE,
+            TenantStatus.TRIAL,
+        ):
+            return None
+        await self._bind_tenant(tenant.id)
+        user = await self.users.get_by_email(email, for_update=True)
+        if user is None or user.status is not UserStatus.ACTIVE:
+            return None
+        if not await self._tenant_is_enabled(tenant.id):
             return None
         token = secrets.token_urlsafe(32)
         user.password_reset_token_hash = hash_token(token)
         user.password_reset_expires_at = utc_now() + timedelta(hours=1)
         await self.users.session.flush()
+        await AuthDelivery(self.users.session, self.settings).enqueue(
+            user, tenant, "PASSWORD_RESET", token, user.password_reset_expires_at
+        )
         await self.audit.record(
             action="user.password_reset_request",
-            actor=user,
+            actor=AnonymousActor(user_id=user.id),
             resource_type="user",
             resource_id=str(user.id),
         )
         return token
 
     async def confirm_password_reset_in(
-        self, tenant: Tenant, *, token: str, new_password: str, actor: Actor
+        self, tenant: Tenant, *, token: str, new_password: str
     ) -> None:
-        """Complete a password reset with a valid, unexpired token."""
+        """Complete a reset, consuming its credential and revoking all sessions."""
+        await self._bind_tenant(tenant.id)
+        await self._require_enabled_tenant(tenant.id)
         user = (
             await self.users.session.execute(
-                select(User).where(
+                select(User)
+                .where(
                     User.password_reset_token_hash == hash_token(token),
                     User.tenant_id == tenant.id,
                     User.deleted_at.is_(None),
+                    User.status == UserStatus.ACTIVE,
                 )
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
+        await self._require_enabled_tenant(tenant.id)
         if user is None or user.password_reset_expires_at is None:
             raise AuthenticationError(
                 code=ErrorCode.TOKEN_INVALID, message="Reset token is not valid."
@@ -642,11 +757,24 @@ class AuthService:
                 code=ErrorCode.TOKEN_EXPIRED, message="Reset token has expired."
             )
         user.password_hash = self.hash_password(new_password)
+        user.mfa_pending_secret_encrypted = None
+        user.mfa_pending_session_id = None
+        user.mfa_pending_expires_at = None
+        await self.users.session.execute(
+            update(Session)
+            .where(Session.tenant_id == user.tenant_id, Session.user_id == user.id)
+            .values(
+                platform_reauthenticated_at=None,
+                platform_mfa_verified_at=None,
+                platform_mfa_factor_id=None,
+            )
+        )
         user.password_reset_token_hash = None
         user.password_reset_expires_at = None
         user.failed_login_attempts = 0
         user.locked_until = None
         await self.users.session.flush()
+        actor = await self._actor_for(user)
         revoked = await self.logout_all(user.id, actor=actor)
         await self.audit.record(
             action="user.password_reset",
@@ -656,14 +784,87 @@ class AuthService:
             changes={"sessions_revoked": revoked},
         )
 
+    async def request_email_verification_in(self, tenant: Tenant, *, email: str) -> None:
+        if tenant.deleted_at is not None or tenant.status not in (
+            TenantStatus.ACTIVE,
+            TenantStatus.TRIAL,
+        ):
+            return
+        await self._bind_tenant(tenant.id)
+        user = await self.users.get_by_email(email, for_update=True)
+        if (
+            user is None
+            or user.email_verified_at is not None
+            or user.status not in (UserStatus.ACTIVE, UserStatus.INVITED)
+        ):
+            return
+        if not await self._tenant_is_enabled(tenant.id):
+            return
+        token = secrets.token_urlsafe(32)
+        user.email_verification_token_hash = hash_token(token)
+        user.email_verification_expires_at = utc_now() + timedelta(hours=1)
+        await self.users.session.flush()
+        await AuthDelivery(self.users.session, self.settings).enqueue(
+            user, tenant, "EMAIL_VERIFICATION", token, user.email_verification_expires_at
+        )
+        await self.audit.record(
+            action="user.email_verification_request",
+            actor=AnonymousActor(user.id),
+            resource_type="user",
+            resource_id=str(user.id),
+        )
+
+    async def confirm_email_verification_in(self, tenant: Tenant, *, token: str) -> None:
+        await self._bind_tenant(tenant.id)
+        await self._require_enabled_tenant(tenant.id)
+        user = (
+            await self.users.session.execute(
+                select(User)
+                .where(
+                    User.tenant_id == tenant.id,
+                    User.deleted_at.is_(None),
+                    User.status.in_((UserStatus.ACTIVE, UserStatus.INVITED)),
+                    User.email_verification_token_hash == hash_token(token),
+                    User.email_verified_at.is_(None),
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        await self._require_enabled_tenant(tenant.id)
+        if user is None or user.email_verification_expires_at is None:
+            raise AuthenticationError(
+                code=ErrorCode.TOKEN_INVALID, message="Verification code is not valid."
+            )
+        if user.email_verification_expires_at <= utc_now():
+            raise AuthenticationError(
+                code=ErrorCode.TOKEN_EXPIRED, message="Verification code has expired."
+            )
+        user.email_verified_at = utc_now()
+        user.email_verification_token_hash = None
+        user.email_verification_expires_at = None
+        if user.status == UserStatus.INVITED:
+            user.status = UserStatus.ACTIVE
+        await self.users.session.flush()
+        await self.audit.record(
+            action="user.email_verified",
+            actor=AnonymousActor(user.id),
+            resource_type="user",
+            resource_id=str(user.id),
+        )
+
     async def verify_email(self, user_id: UUID, *, actor: Actor) -> None:
-        """Mark a user's email verified, activating an invited account."""
-        user = await self.users.get_active(user_id)
+        """Administrative activation; not a public proof-of-email endpoint."""
+        ensure_permission(actor, "users.write")
+        ensure_tenant_match(actor, self.users.tenant_id, resource_type="user")
+        user = await self.users.get_active(user_id, for_update=True)
         if user is None:
             raise NotFoundError(resource_type="user", resource_id=str(user_id))
         if user.email_verified_at is not None:
             return
         user.email_verified_at = utc_now()
+        user.email_verification_token_hash = None
+        user.email_verification_expires_at = None
         if user.status is UserStatus.INVITED:
             user.status = UserStatus.ACTIVE
         await self.users.session.flush()
@@ -675,45 +876,62 @@ class AuthService:
         )
 
     # -- API keys ------------------------------------------------------------
-    async def authenticate_api_key(self, presented_key: str) -> Actor:
-        """
-        Authenticate a device gateway or partner integration by API key.
+    async def authenticate_api_key(self, presented_key: str, *, tenant_id: UUID) -> Actor:
+        """Authenticate within an explicitly routed tenant, never by global prefix.
 
-        The prefix is looked up first and the hash compared second, so an unknown
-        prefix costs one query rather than a hash verification per stored key. The
-        comparison itself is constant-time.
-
-        The actor an API key produces carries only the key's declared scopes and
-        holds no role, which is what makes ``bins.telemetry.ingest`` reachable this
-        way and through no human role at all (``rbac.md`` §4.1): a compromised user
-        session cannot forge telemetry.
+        Tenant SHARE -> key UPDATE locks last until the caller commits/rolls back
+        its business transaction. Revocation waits for in-flight work, then later
+        authentications fail. No human-role inheritance or creator liveness tie.
+        HTTP device endpoints/rate budgets must be added by the consuming module.
         """
-        if len(presented_key) < 16:
+        prefix = api_key_prefix(presented_key)
+        if prefix is None:
             raise self._invalid_credentials()
-        prefix = presented_key[:12]
-        api_key = await ApiKeyRepository(self.users.session, self.users.tenant_id).find_by_prefix(
-            prefix
+        await self._bind_tenant(tenant_id)
+        tenant = (
+            await self.users.session.execute(
+                select(Tenant)
+                .where(
+                    Tenant.id == tenant_id,
+                    Tenant.deleted_at.is_(None),
+                    Tenant.status.in_([TenantStatus.ACTIVE, TenantStatus.TRIAL]),
+                )
+                .with_for_update(read=True)
+            )
+        ).scalar_one_or_none()
+        if tenant is None:
+            raise self._invalid_credentials()
+        api_key = await ApiKeyRepository(self.users.session, tenant_id).find_by_prefix(
+            prefix, for_update=True
         )
         now = utc_now()
         if (
             api_key is None
             or api_key.revoked_at is not None
-            or (api_key.expires_at is not None and api_key.expires_at <= now)
+            or api_key.expires_at is None
+            or api_key.expires_at <= now
+            or not api_key.scopes
+            or not set(api_key.scopes).issubset(API_KEY_SCOPES)
             or not tokens_match(presented_key, api_key.key_hash)
         ):
             raise self._invalid_credentials()
-
         api_key.last_used_at = now
-        await self.users.session.flush()
-        return Actor(
+        actor = Actor(
             user_id=api_key.id,
             tenant_id=api_key.tenant_id,
             email=f"apikey:{api_key.key_prefix}@tenant.invalid",
             full_name=api_key.name,
             permissions=frozenset(api_key.scopes),
-            roles=frozenset({"API_KEY"}),
+            roles=frozenset(),
             auth_type="API_KEY",
         )
+        await self.audit.record(
+            action="api_key.authenticate",
+            actor=actor,
+            resource_type="api_key",
+            resource_id=str(api_key.id),
+        )
+        return actor
 
 
 @dataclass(frozen=True, slots=True)
@@ -728,3 +946,7 @@ class AnonymousActor:
 
     user_id: UUID | None
     auth_type: str = "USER"
+
+
+def _tenant_enabled(tenant: Tenant) -> bool:
+    return tenant.deleted_at is None and tenant.status in (TenantStatus.ACTIVE, TenantStatus.TRIAL)

@@ -320,7 +320,9 @@ class ErrorEnvelopeMiddleware:
                 warnings=warnings,
             )
         )
+        # This fallback sits outside route-specific privacy middleware.
         headers: list[tuple[bytes, bytes]] = [
+            (b"cache-control", b"no-store"),
             (b"content-type", b"application/json"),
             (b"content-length", str(len(body)).encode("ascii")),
         ]

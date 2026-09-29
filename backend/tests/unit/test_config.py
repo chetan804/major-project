@@ -23,6 +23,7 @@ def make_settings(**overrides: object) -> Settings:
     """Build settings with a valid baseline so each test varies one thing."""
     base: dict[str, object] = {
         "environment": "development",
+        "auth_delivery_enabled": False,
         "jwt_secret_key": VALID_SECRET,
         "redis_adapter": "redis",
         "job_runner": "celery",
@@ -247,7 +248,8 @@ def test_adapter_summary_labels_every_simulated_component() -> None:
     assert summary["llm"]["is_simulated"] is True
 
     # Real infrastructure and genuinely implemented adapters are not flagged.
-    assert summary["email"]["is_simulated"] is False
+    assert summary["email"]["is_simulated"] is True
+    assert summary["auth_rate_limits"]["is_simulated"] is True
     assert summary["storage"]["is_simulated"] is False
 
 

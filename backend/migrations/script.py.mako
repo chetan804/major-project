@@ -6,11 +6,11 @@ Create Date: ${create_date}
 
 Design notes for the reviewer:
 
-* Tenant-owned tables must carry ``tenant_id`` with a foreign key to
-  ``tenants.id`` and acquire a row-level security policy (see
-  ``docs/security/security-model.md`` §4). A table without either is a
-  cross-tenant disclosure waiting to happen, and
-  ``tests/db/test_rls_coverage.py`` fails the build when one is missing.
+* Tenant-owned tables require a non-null ``tenant_id`` and forced row-level
+  security (``docs/security/security-model.md`` §4). TenantScopedMixin adds
+  a registry FK; TenantKeyMixin intentionally omits it for shared-scope rows
+  such as sessions and audit logs. Do not infer FK locking from a column name.
+  ``tests/db/test_rls_coverage.py`` checks the isolation policies, not universal FKs.
 * Measured quantities use ``NUMERIC`` via the aliases in ``app.db.types`` —
   never a floating-point type (master directive, sections 7 and 36).
 * Indexes are added for query patterns that exist. Composite indexes follow the

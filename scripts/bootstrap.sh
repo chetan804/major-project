@@ -72,6 +72,27 @@ else
   log ".env already exists; leaving it untouched"
 fi
 
+# Upgrade existing local configuration without changing configured credentials.
+# Independent encryption keys protect queued mail and MFA seeds; never reuse JWT keys.
+"$VENV_DIR/bin/python" - <<'PYMAIL'
+from pathlib import Path
+from cryptography.fernet import Fernet
+from dotenv import dotenv_values
+p = Path(".env")
+values = dotenv_values(p)
+content = p.read_text()
+for name in ("AUTH_MAIL_ENCRYPTION_KEY", "MFA_ENCRYPTION_KEY"):
+    key = values.get(name, "") or ""
+    if not key or "CHANGE_ME" in key:
+        replacement = name + '="' + Fernet.generate_key().decode() + '"'
+        lines = [line for line in content.splitlines() if not line.startswith(name + "=")]
+        content = "\n".join([*lines, replacement]) + "\n"
+if "AUTH_DELIVERY_ENABLED" not in values:
+    content += "AUTH_DELIVERY_ENABLED=true\n"
+p.write_text(content)
+p.chmod(0o600)
+PYMAIL
+
 # ---------------------------------------------------------------------------
 # 3. PostgreSQL (real server, bundled binaries)
 # ---------------------------------------------------------------------------
@@ -82,7 +103,10 @@ log "starting PostgreSQL cluster at $PGDATA_DIR"
 
 "$VENV_DIR/bin/python" scripts/pg_server.py url > "$RUN_DIR/database_url"
 DB_URL="$(cat "$RUN_DIR/database_url")"
-log "database ready: $DB_URL"
+# Explicit URLs win over .env defaults; preserve an operator's overrides.
+export DATABASE_URL="${DATABASE_URL:-$DB_URL}"
+export MIGRATION_DATABASE_URL="${MIGRATION_DATABASE_URL:-$("$VENV_DIR/bin/python" -c 'import os; from sqlalchemy.engine import make_url; print(make_url(os.environ["DATABASE_URL"]).set(drivername="postgresql+psycopg2").render_as_string(hide_password=False))')}"
+log "local database ready"
 
 # ---------------------------------------------------------------------------
 # 4. Migrations + seed data
@@ -98,10 +122,14 @@ log "bootstrap complete"
 cat <<'EOF'
 
 Next steps:
-  make api        # start the FastAPI server        (http://localhost:8000/docs)
-  make web        # start the Vite dev server       (http://localhost:5173)
-  make worker     # start background job processing
-  make test       # run the test suite
-  make simulate   # emit simulated IoT telemetry
+  make run        # start FastAPI (http://localhost:8000/docs)
+  make seed       # idempotent dev identity seed; never resets existing access
+  make auth-mail  # deliver one batch of recovery/verification messages
+  make gate       # lint, types, secrets, migration drift and tests
+
+Initial dev login details are in .runtime/dev-account.json (mode 0600).
+Local recovery mail is private under .runtime/auth-mail (not sent externally).
+Run auth-mail repeatedly to handle queued messages/retries. SMTP requires TLS.
+Frontend, general background jobs and operational demo data remain unimplemented.
 
 EOF

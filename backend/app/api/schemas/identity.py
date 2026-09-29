@@ -16,10 +16,12 @@ no tenant bound sees no user rows at all.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, StringConstraints, field_validator
 
+from app.api.schemas.administration import EditableUserStatus
 from app.api.schemas.common import ORMModel, RequestModel, Timestamped
 
 __all__ = [
@@ -38,11 +40,15 @@ __all__ = [
 ]
 
 
+# Credentials are exact byte-for-byte values, unlike names and addresses.
+Password = Annotated[str, StringConstraints(strip_whitespace=False)]
+
+
 class LoginRequest(RequestModel):
     """A sign-in attempt."""
 
     email: str = Field(min_length=3, max_length=320)
-    password: str = Field(min_length=1, max_length=128)
+    password: Password = Field(min_length=1, max_length=128)
     tenant_slug: str = Field(min_length=1, max_length=120)
 
 
@@ -103,8 +109,8 @@ class ProfileUpdateRequest(RequestModel):
 class PasswordChangeRequest(RequestModel):
     """A password change by the authenticated caller."""
 
-    current_password: str = Field(min_length=1, max_length=128)
-    new_password: str = Field(min_length=8, max_length=128)
+    current_password: Password = Field(min_length=1, max_length=128)
+    new_password: Password = Field(min_length=8, max_length=128)
 
 
 class PasswordResetRequest(RequestModel):
@@ -119,7 +125,16 @@ class PasswordResetConfirmRequest(RequestModel):
 
     token: str = Field(min_length=16, max_length=256)
     tenant_slug: str = Field(min_length=1, max_length=120)
-    new_password: str = Field(min_length=8, max_length=128)
+    new_password: Password = Field(min_length=8, max_length=128)
+
+
+class EmailVerificationRequest(PasswordResetRequest):
+    """Public request for a verification code, including invited accounts."""
+
+
+class EmailVerificationConfirmRequest(RequestModel):
+    token: str = Field(min_length=16, max_length=256)
+    tenant_slug: str = Field(min_length=1, max_length=120)
 
 
 class SessionResponse(ORMModel):
@@ -137,24 +152,26 @@ class UserCreateRequest(RequestModel):
     """An invitation: an administrator creating a user in their own tenant."""
 
     email: str = Field(min_length=3, max_length=320)
-    password: str = Field(min_length=8, max_length=128)
+    password: Password = Field(min_length=8, max_length=128)
     full_name: str = Field(min_length=1, max_length=200)
     phone: str | None = Field(default=None, max_length=40)
 
 
 class UserUpdateRequest(RequestModel):
-    """
-    An administrative update of a user.
+    """Administrative PATCH; email, tenant, credentials and grants are immutable here."""
 
-    ``PATCH`` semantics: only the fields present are changed. The email is absent
-    because changing it is a separate, verified operation rather than a field edit.
-    """
-
-    full_name: str | None = Field(default=None, max_length=200)
+    full_name: str | None = Field(default=None, min_length=1, max_length=200)
     phone: str | None = Field(default=None, max_length=40)
-    status: str | None = Field(default=None, max_length=32)
+    status: EditableUserStatus | None = None
     preferred_timezone: str | None = Field(default=None, max_length=64)
     preferred_locale: str | None = Field(default=None, max_length=16)
+
+    @field_validator("full_name", "status")
+    @classmethod
+    def non_null(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("field cannot be null")
+        return value
 
 
 class UserResponse(Timestamped):

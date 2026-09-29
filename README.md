@@ -2,12 +2,12 @@
 
 **AI-powered smart waste management & environmental intelligence platform.**
 
-EcoMind-AI converts waste-management data into operational decisions: it
-ingests smart-bin telemetry, forecasts waste generation, classifies waste from
-images, plans and optimises collection routes under real capacity and
-time-window constraints, tracks material from collection through processing to
-recovery or disposal, estimates carbon impact from versioned emission factors,
-and answers operational questions through an AI assistant that is bound to
+EcoMind-AI is designed to convert waste-management data into operational decisions:
+ingesting smart-bin telemetry, forecasting waste generation, classifying waste from
+images, planning and optimising collection routes under real capacity and
+time-window constraints, tracking material from collection through processing to
+recovery or disposal, estimating carbon impact from versioned emission factors,
+and answering operational questions through an AI assistant that is bound to
 permission-checked tools rather than free invention.
 
 Multi-tenant, role-based, API-first, built for municipalities, private haulers,
@@ -20,9 +20,9 @@ campuses, commercial and industrial facilities.
 | Phase | Scope | State |
 |---|---|---|
 | **0** | Requirements, architecture, domain model, ERD, API/RBAC/AI design | ✅ **Complete** |
-| 1 | Repository & infrastructure scaffolding | ⏳ Next |
-| 2 | Authentication, tenancy, RBAC, audit | Planned |
-| 3 | Core waste domain (bins, vehicles, drivers, facilities, taxonomy) | Planned |
+| 1 | Repository & infrastructure scaffolding | Backend delivered; frontend/container work deferred |
+| **2** | **Authentication, tenancy, RBAC, audit** | **Complete — API/security gate passed; production prerequisites documented** |
+| 3 | Core waste domain (bins, vehicles, drivers, facilities, taxonomy) | Next |
 | 4 | IoT & telemetry (ingestion, sensors, alerts, simulator) | Planned |
 | 5 | Collection operations & driver workflow | Planned |
 | 6 | Route optimisation & comparison | Planned |
@@ -47,29 +47,57 @@ See [`docs/project-state.md`](docs/project-state.md) for live continuity state.
 
 ## Quickstart
 
+The backend foundation, authentication, user/role administration, current-tenant
+settings, a development-admin seed, recovery/verification mail delivery and
+authentication rate limits, audit browsing, administrative sessions and scoped
+API-key lifecycle management are implemented. The frontend, general job runner,
+simulator and operational demo data are not available yet.
+
 ```bash
-# 1. Bootstrap: virtualenv, dependencies, .env, real PostgreSQL, migrations, seed
+# Install dependencies, generate .env, start PostgreSQL, migrate and seed.
 ./scripts/bootstrap.sh
 
-# 2. Start the services
-make api      # FastAPI  → http://localhost:8000  (OpenAPI docs at /docs)
-make web      # Vite SPA → http://localhost:5173
-make worker   # background jobs (forecasts, aggregations, notifications)
+# Initial admin login details: .runtime/dev-account.json (mode 0600).
+# Never commit or share this file. Re-running bootstrap preserves changed access.
 
-# 3. Drive the platform with simulated IoT data
-make simulate
+# Start FastAPI on 0.0.0.0:8000; API docs at /docs.
+# Explicit local cache adapter: no Redis server required.
+REDIS_ADAPTER=fakeredis make run
 
-# 4. Verify
-make audit    # lint + types + all tests + architecture rules + secret scan
+# In another terminal: dispatch queued recovery/verification mail (one pass).
+# Local mail: .runtime/auth-mail/<tenant UUID>/<message UUID>.eml (private).
+make auth-mail
+
+# Lint, types, secrets, migration drift, all tests.
+make gate
 ```
 
-Development runs against a **real PostgreSQL 16** server (bundled binaries via
-`pgserver`) so that constraints, `NUMERIC` precision, row-level security and
-window functions behave exactly as in production. No SQLite substitute is used
-anywhere — see [ADR-0002](docs/architecture/decisions.md).
+Requires Python 3.11+. Development uses real PostgreSQL 16 through `pgserver`,
+not SQLite. A runtime production DB role must not have superuser or `BYPASSRLS`
+privileges. The auth integration suite verifies behavior using a restricted role.
 
-Requires Python 3.11+ and Node 20+. Docker is optional: `docker compose up`
-brings up the same stack with PostgreSQL, Redis, MinIO and nginx.
+**Phase 2 complete — verified 2026-09-29:** `make gate` passes — **1638 tests passed, 6 skipped**.
+See the [Phase 2 gate report](docs/reports/phase-2-gate.md) for evidence and remaining
+production prerequisites. Phase 3 (core waste domain) is next. Startup now refuses
+unclassified routes; OpenAPI advertises actual bearer and error contracts.
+Recovery is locally end-to-end verified; external SMTP delivery and real Redis
+have not been tested here. Production requires shared Redis 7+ counters and
+configured STARTTLS mail; development adapters are explicitly labelled. See the
+[recovery runbook](docs/api/account-recovery.md) for endpoints and worker setup.
+Tenant [audit/session administration](docs/api/security-administration.md) is now
+available with permission checks, audited reads and refresh-safe revocation.
+[API-key lifecycle](docs/api/api-keys.md) now supports one-time issuance, finite
+expiry, rotation and revocation. Machine ingestion endpoints remain planned.
+[Platform tenant administration](docs/api/platform-tenants.md) now includes guarded
+provisioning, suspension and activation, plus offline first-operator bootstrap.
+Platform mutations now require [session-bound password confirmation](docs/api/platform-step-up.md).
+[Opt-in platform-action MFA](docs/api/platform-mfa.md) adds TOTP, one-time recovery
+codes and guarded factor replacement. Enrolled operators need two-factor confirmation
+for registry writes; ordinary login and unenrolled password confirmation are unchanged.
+[Operator lifecycle](docs/api/platform-operators.md) now supports MFA-protected invitations,
+suspension/reactivation and one-way required-MFA policy, with a last-operator guard.
+Global/login-wide MFA, all-factor-loss recovery and break-glass remain planned. See
+[`docs/project-state.md`](docs/project-state.md) for remaining work.
 
 ---
 
@@ -112,7 +140,7 @@ Browser SPA ──► reverse proxy ──► FastAPI (modular monolith)
 |---|---|
 | [`docs/environment.md`](docs/environment.md) | Verified sandbox capabilities with reproduction commands, and the three findings that shaped the design |
 | [`docs/architecture/architecture.md`](docs/architecture/architecture.md) | System context, module decomposition, dependency rules, request lifecycle, scaling path |
-| [`docs/architecture/decisions.md`](docs/architecture/decisions.md) | 13 ADRs with rejected alternatives |
+| [`docs/architecture/decisions.md`](docs/architecture/decisions.md) | 15 ADRs with rejected alternatives |
 | [`docs/architecture/domain-model.md`](docs/architecture/domain-model.md) | Aggregates, invariants, state machines, 20 business rules, metric formulas, explainable scoring |
 | [`docs/database/erd.md`](docs/database/erd.md) | 72-table physical design: columns, constraints, indexes, RLS plan, retention |
 | [`docs/api/rest-api.md`](docs/api/rest-api.md) | ~150 endpoints, conventions, long-running job flows, assistant response contract |
@@ -163,7 +191,8 @@ scripts/            bootstrap, pg_server, check_secrets
 
 ## Safety and integrity commitments
 
-These are enforced in code, in the schema, and in tests — not just documented:
+These are implementation requirements. Enforcement is being added phase by phase;
+the current verified coverage is recorded in `docs/project-state.md`:
 
 1. No fake success responses; no mock endpoints; no hardcoded dashboard numbers.
 2. Every important metric is traceable to records, a model version, or a sourced

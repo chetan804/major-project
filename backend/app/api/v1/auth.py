@@ -1,9 +1,9 @@
 """
 Authentication endpoints.
 
-Three operations are public by written decision and appear in
+Six operations are public by written decision and appear in
 ``tests/architecture/test_route_inventory.py::PUBLIC_ROUTES``: login, refresh and
-the password-reset request. There is no other way to obtain a first token, so
+both password-reset operations and both email-verification operations. There is no other way to obtain a first token, so
 protecting them would make the API unusable rather than safe.
 
 Everything else requires a bearer token, and the administrative routes additionally
@@ -29,8 +29,11 @@ from app.api.deps import (
     SettingsDep,
     require_permission,
 )
+from app.api.rate_limits import account_limit
 from app.api.schemas.common import Page, PageMeta
 from app.api.schemas.identity import (
+    EmailVerificationConfirmRequest,
+    EmailVerificationRequest,
     LoginRequest,
     MeResponse,
     PasswordChangeRequest,
@@ -44,6 +47,7 @@ from app.api.schemas.identity import (
     UserResponse,
 )
 from app.authorization.context import SYSTEM_ACTOR, Actor
+from app.authorization.tokens import hash_token
 from app.core.config import Settings
 from app.core.errors import NotFoundError
 from app.models.identity import Tenant, User
@@ -54,6 +58,7 @@ from app.repositories.identity import (
     UserRepository,
 )
 from app.services.auth import AuthService
+from app.services.auth_delivery import AuthDelivery
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -127,6 +132,7 @@ async def login(
     session: SessionDep,
 ) -> TokenResponse:
     """Sign in. Public by design: there is no other way to obtain a first token."""
+    await account_limit(request, settings, "login", payload.tenant_slug, payload.email)
     service = _service_for(settings, session, actor=None)
     result = await service.authenticate(
         email=payload.email,
@@ -150,17 +156,19 @@ async def login(
 )
 async def refresh(
     payload: RefreshRequest,
+    request: Request,
     settings: SettingsDep,
     session: SessionDep,
 ) -> TokenResponse:
     """
     Rotate a token pair.
 
-    The refresh token is not tenant-scoped — it is an opaque credential whose
-    session row names the tenant — so this route needs no bearer token. Presenting
-    an already-rotated token revokes the whole family and fails.
+    The refresh token carries an untrusted tenant routing hint plus random
+    secret material. Its full hash must match within that tenant under RLS.
+    No bearer token is needed. Reuse revokes the whole rotation family.
     """
     service = _service_for(settings, session, actor=None)
+    await account_limit(request, settings, "refresh", hash_token(payload.refresh_token))
     result = await service.refresh(payload.refresh_token)
     await session.commit()
     return TokenResponse(
@@ -172,34 +180,75 @@ async def refresh(
     )
 
 
+def _recovery_response(settings: Settings) -> dict[str, str]:
+    return {
+        "status": "accepted",
+        "message": "If this account is eligible, a code has been queued for delivery. Only the latest code is valid.",
+        "delivery_status": "queued_if_eligible",
+        "delivery_mode": "local_mailbox" if settings.email_provider == "console" else "smtp",
+    }
+
+
 @router.post(
-    "/password-reset",
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="Request a password reset link",
+    "/password-reset", status_code=status.HTTP_202_ACCEPTED, summary="Request a password reset code"
 )
 async def request_password_reset(
-    payload: PasswordResetRequest,
+    payload: PasswordResetRequest, request: Request, settings: SettingsDep, session: SessionDep
+) -> dict[str, str]:
+    # Check delivery configuration before resolving the account so configuration
+    # outages and unknown accounts cannot produce distinguishable responses.
+    await account_limit(request, settings, "recovery_request", payload.tenant_slug, payload.email)
+    AuthDelivery(session, settings).cipher()
+    tenant = await TenantRepository(session).get_by_slug(payload.tenant_slug.strip().lower())
+    if tenant is not None:
+        await _service_for(settings, session, None).request_password_reset_in(
+            tenant, email=payload.email
+        )
+    await session.commit()
+    return _recovery_response(settings)
+
+
+@router.post(
+    "/email/verify-request",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Request email verification (including invited accounts)",
+)
+async def request_email_verification(
+    payload: EmailVerificationRequest, request: Request, settings: SettingsDep, session: SessionDep
+) -> dict[str, str]:
+    await account_limit(request, settings, "recovery_request", payload.tenant_slug, payload.email)
+    AuthDelivery(session, settings).cipher()
+    tenant = await TenantRepository(session).get_by_slug(payload.tenant_slug.strip().lower())
+    if tenant is not None:
+        await _service_for(settings, session, None).request_email_verification_in(
+            tenant, email=payload.email
+        )
+    await session.commit()
+    return _recovery_response(settings)
+
+
+@router.post("/email/verify-confirm", summary="Consume a single-use verification code")
+async def confirm_email_verification(
+    payload: EmailVerificationConfirmRequest,
+    request: Request,
     settings: SettingsDep,
     session: SessionDep,
 ) -> dict[str, str]:
-    """
-    Start a reset.
+    await account_limit(
+        request, settings, "recovery_confirm", payload.tenant_slug, hash_token(payload.token)
+    )
+    tenant = await TenantRepository(session).get_by_slug(payload.tenant_slug.strip().lower())
+    if tenant is None:
+        from app.core.errors import AuthenticationError, ErrorCode
 
-    The response is identical whether or not the address has an account, so this
-    endpoint cannot be used to enumerate users. The token is not returned: a
-    deployment with outbound mail sends it, and this one records that a reset was
-    requested without disclosing whether it was.
-    """
-    tenants = TenantRepository(session)
-    tenant = await tenants.get_by_slug(payload.tenant_slug.strip().lower())
-    if tenant is not None:
-        service = _service_for(settings, session, actor=None)
-        await service.request_password_reset_in(tenant, email=payload.email)
+        raise AuthenticationError(
+            code=ErrorCode.TOKEN_INVALID, message="Verification code is not valid."
+        )
+    await _service_for(settings, session, None).confirm_email_verification_in(
+        tenant, token=payload.token
+    )
     await session.commit()
-    return {
-        "status": "accepted",
-        "message": "If that address has an account, a reset link is on its way.",
-    }
+    return {"status": "ok", "message": "Email verified. You may now sign in."}
 
 
 @router.post(
@@ -209,6 +258,7 @@ async def request_password_reset(
 )
 async def confirm_password_reset(
     payload: PasswordResetConfirmRequest,
+    request: Request,
     settings: SettingsDep,
     session: SessionDep,
 ) -> dict[str, str]:
@@ -218,6 +268,9 @@ async def confirm_password_reset(
     Every existing session for that user is revoked as a side effect: whoever asked
     for the reset may be doing so because someone else is signed in.
     """
+    await account_limit(
+        request, settings, "recovery_confirm", payload.tenant_slug, hash_token(payload.token)
+    )
     tenants = TenantRepository(session)
     tenant = await tenants.get_by_slug(payload.tenant_slug.strip().lower())
     if tenant is None:
@@ -229,7 +282,6 @@ async def confirm_password_reset(
         tenant,
         token=payload.token,
         new_password=payload.new_password,
-        actor=SYSTEM_ACTOR,
     )
     await session.commit()
     return {"status": "ok", "message": "Password updated. Sign in with your new password."}
@@ -272,6 +324,7 @@ async def update_profile(
 @router.post("/me/password", status_code=status.HTTP_200_OK, summary="Change the caller's password")
 async def change_password(
     payload: PasswordChangeRequest,
+    request: Request,
     actor: AuthenticatedActor,
     settings: SettingsDep,
     session: SessionDep,
@@ -283,6 +336,9 @@ async def change_password(
     they suspect their account is compromised.
     """
     service = _service_for(settings, session, actor)
+    await account_limit(
+        request, settings, "password_change", str(actor.tenant_id), str(actor.user_id)
+    )
     await service.change_password(
         current_password=payload.current_password,
         new_password=payload.new_password,
@@ -411,16 +467,16 @@ async def create_user(
     )
     await session.commit()
     return UserResponse(
-        id=result.user.id,
-        email=result.user.email,
-        full_name=result.user.full_name,
-        phone=result.user.phone,
-        status=result.user.status.value,
-        email_verified_at=result.user.email_verified_at,
-        last_login_at=result.user.last_login_at,
-        created_at=result.user.created_at,
-        updated_at=result.user.updated_at,
-        roles=sorted(result.actor.roles),
+        id=result.id,
+        email=result.email,
+        full_name=result.full_name,
+        phone=result.phone,
+        status=result.status.value,
+        email_verified_at=result.email_verified_at,
+        last_login_at=result.last_login_at,
+        created_at=result.created_at,
+        updated_at=result.updated_at,
+        roles=[],
     )
 
 

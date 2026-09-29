@@ -1,6 +1,6 @@
 # EcoMind-AI — Implementation Phases
 
-**Status:** Phase 0 baseline (approved direction) · **Phase gates:** mandatory per section 60
+**Status:** Phase 2 API/security gate complete (2026-09-29); Phase 3 next · **Phase gates:** mandatory per section 60
 
 Each phase ends with a **gate report** containing: completed features; files
 created/modified; database changes; API endpoints added; tests added; tests
@@ -51,7 +51,7 @@ with a real DB; app starts; CI config sane.
 
 ---
 
-## Phase 2 — Authentication, tenancy, RBAC, audit
+## Phase 2 — Authentication, tenancy, RBAC, audit ✅
 
 **Build:** tenant + user + role + permission + session + api_key tables and
 migrations; permission catalogue and seeded roles (the `rbac.md` §4 matrix);
@@ -66,7 +66,15 @@ service and middleware; rate limiting; security headers; CORS; secret redaction.
 leakage, RLS-as-non-owner.
 
 **Gate:** 100 % pass on security and isolation suites; matrix test proves the
-documented role table; no endpoint without a declared permission.
+documented role table; no endpoint without a declared permission or a reviewed
+public/self-service exception. Self-service exceptions must authenticate a live actor.
+
+**Status: complete (2026-09-29).** See [Phase 2 gate report](reports/phase-2-gate.md)
+for build-to-test evidence, migrations, API inventory, limitations and Phase 3
+prerequisites. The runtime startup check now enforces the previously test-only gate.
+This is not a claim of production deployment, frontend/domain delivery, or completed
+break-glass/emergency recovery. Deferred infrastructure and privileged features remain
+listed explicitly in the report and project state (ADR-0023).
 
 ---
 

@@ -1,16 +1,22 @@
 # EcoMind-AI — Requirements Traceability Matrix
 
-**Status:** Phase 0 skeleton — every requirement has a *designed* home before code exists.
+**Status:** Updated at Phase 2 closure, 2026-09-29. Foundation and implemented
+identity/control-plane requirements have executable evidence; domain/frontend work
+remains designed, even where its tables already exist.
 **Update rule:** a requirement's `Status` advances only when its `Tests` column
 points at tests that actually pass. Rows are never deleted; unimplemented work
-stays visible as `PLANNED`.
+stays visible as `DESIGNED` or `IN PROGRESS`.
 
 **Status vocabulary:** `DESIGNED` (Phase 0 complete) · `IN PROGRESS` ·
 `IMPLEMENTED` (code + tests + docs) · `DEFERRED` (with reason) · `OUT OF SCOPE`
 (with reason).
 
 Legend for `Impl` column: module paths are relative to `backend/app/` unless
-otherwise noted.
+otherwise noted. Test paths are relative to `backend/tests/` unless explicitly
+prefixed. `IMPLEMENTED` means the **current API/schema scope**, not all future domain
+surfaces or production deployment certification. External Redis/SMTP, cookie/CSRF
+transport and frontend guards are not claimed; see `reports/phase-2-gate.md`.
+Names in DESIGNED rows are planned homes, not assertions those files exist.
 
 ---
 
@@ -18,39 +24,39 @@ otherwise noted.
 
 | Req | Requirement | Subsystem | Impl | API | DB | Tests | Doc | Status |
 |---|---|---|---|---|---|---|---|---|
-| REQ-PLT-001 | Multi-tenant SaaS with enforced isolation | tenancy | `core/tenancy.py`, `repositories/base.py` | all | `tenants`, RLS on all tenant tables | `security/test_tenant_isolation.py` | `architecture/architecture.md` §5 | DESIGNED |
-| REQ-PLT-002 | Modular monolith with enforceable boundaries | all | module layout + import rules | — | — | `architecture/test_import_rules.py` | `architecture/architecture.md` §3 | DESIGNED |
-| REQ-PLT-003 | Versioned REST API + OpenAPI | api | `api/v1/*` | `/api/v1/*` | — | `api/test_openapi_contract.py` | `api/rest-api.md` | DESIGNED |
-| REQ-PLT-004 | Standard error contract, no internal leakage | core | `core/errors.py` | all | — | `api/test_error_contract.py` | `api/error-catalogue.md` | DESIGNED |
-| REQ-PLT-005 | UUID PKs, UTC timestamps, NUMERIC for measured values | db | model mixins | — | all tables | `db/test_decimal_precision.py` | `database/erd.md` §1 | DESIGNED |
-| REQ-PLT-006 | Alembic migrations, no manual DDL | db | `migrations/` | — | all | `db/test_migrations.py` | `deployment/migrations.md` | DESIGNED |
-| REQ-PLT-007 | Auditability of important mutations | audit | `services/audit.py` | `/audit-logs` | `audit_logs` | `services/test_audit.py` | `security/security-model.md` §8 | DESIGNED |
-| REQ-PLT-008 | Observability: health, readiness, metrics, request ids | observability | `core/logging.py`, `api/health.py` | `/health`, `/ready`, `/metrics` | — | `api/test_health.py` | `architecture/architecture.md` §10 | DESIGNED |
-| REQ-PLT-009 | Background jobs, idempotent and observable | workers | `workers/registry.py` | `/jobs` | `job_runs` | `jobs/test_idempotency.py` | `architecture/decisions.md` ADR-0009 | DESIGNED |
-| REQ-PLT-010 | Selective caching with tenant-safe keys | core | `core/cache.py` | — | — | `core/test_cache_keys.py` | `architecture/architecture.md` §12 | DESIGNED |
-| REQ-PLT-011 | Environment-based configuration, no secrets in Git | core | `core/config.py` | — | — | `tests/test_no_secret_leakage.py` | `.env.example`, `deployment/configuration.md` | DESIGNED |
+| REQ-PLT-001 | Multi-tenant SaaS with enforced isolation | tenancy | `authorization/context.py`, `api/deps.py`, `repositories/base.py` | current authenticated APIs | `tenants`, forced RLS | `db/test_rls_coverage.py`, `security/test_auth_lifecycle.py`, `security/test_identity_admin.py` | `architecture/architecture.md` §5 | IMPLEMENTED |
+| REQ-PLT-002 | Modular monolith with enforceable boundaries | all | module layout + import rules | — | — | `architecture/test_import_rules.py` | `architecture/architecture.md` §3 | IMPLEMENTED |
+| REQ-PLT-003 | Versioned REST API + OpenAPI | api | `main.py`, `api/v1/*` | 60 `/api/v1/*` operations | — | `api/test_openapi_contract.py` | `api/rest-api.md` | IMPLEMENTED |
+| REQ-PLT-004 | Standard error contract, no internal leakage | core | `core/{errors,responses}.py`, `api/{errors,schemas/errors}.py` | current API | — | `test_error_contract.py`, `api/test_openapi_contract.py` | `api/error-catalogue.md` | IMPLEMENTED |
+| REQ-PLT-005 | UUID PKs, UTC timestamps, NUMERIC for measured values | db | `db/{base,types}.py`, `models/*` | — | 85 tables | `db/test_types.py`, `db/test_migrations.py` | `database/erd.md` §1 | IMPLEMENTED |
+| REQ-PLT-006 | Alembic migrations, no manual DDL | db | `backend/migrations/` | — | head e1c3617bfb4c | `db/test_migrations.py` | `deployment/migrations.md` | IMPLEMENTED |
+| REQ-PLT-007 | Auditability of important mutations | audit | `repositories/identity.py`, transaction-bound service audit | `/audit-logs` | `audit_logs` | `security/test_security_administration.py`, auth/admin/platform lifecycle suites | `security/security-model.md` §8 | IMPLEMENTED |
+| REQ-PLT-008 | Observability: health, readiness, metrics, request ids | observability | `core/{logging,metrics,middleware}.py`, `api/health.py` | `/health`, `/ready`, `/metrics` | — | `test_health.py`, `test_request_context.py`, `unit/test_logging.py` | `architecture/architecture.md` §10 | IMPLEMENTED |
+| REQ-PLT-009 | Background jobs, idempotent and observable | workers | `workers/auth_mail.py` only; generic jobs planned | CLI dispatch; `/jobs` planned | encrypted `auth_mail_outbox`; generic `job_runs` planned | `security/test_auth_delivery.py`, `unit/test_auth_mail.py` | `architecture/decisions.md` ADR-0009 | IN PROGRESS |
+| REQ-PLT-010 | Selective caching with tenant-safe keys | core | `core/cache.py` | — | — | `unit/test_cache.py` (adapter/key tests, no real Redis proof) | `architecture/architecture.md` §12 | IMPLEMENTED |
+| REQ-PLT-011 | Environment-based configuration, no secrets in Git | core | `core/config.py`, `scripts/check_secrets.py` | — | — | `unit/test_config.py`, `architecture/test_secret_scanner.py` (worktree + actual index) | `.env.example`, `deployment/configuration.md` | IMPLEMENTED |
 | REQ-PLT-012 | i18n-ready frontend strings | frontend | `i18n/` | — | `notification_templates` | frontend lint rule | `frontend/information-architecture.md` §1 | DESIGNED |
-| REQ-PLT-013 | Timezone-correct handling (UTC storage, local presentation) | core | `core/time.py` | — | `TIMESTAMPTZ` | `core/test_timezone.py` | `architecture/domain-model.md` BR-18 | DESIGNED |
+| REQ-PLT-013 | Timezone-correct handling (UTC storage, local presentation) | core | `core/time.py`, `db/types.py`; frontend presentation planned | API UTC timestamps | TIMESTAMPTZ | `unit/test_time.py`, `db/test_types.py` | `architecture/domain-model.md` BR-18 | IN PROGRESS |
 
 ## 2. Identity, access and security
 
 | Req | Requirement | Subsystem | Impl | API | DB | Tests | Doc | Status |
 |---|---|---|---|---|---|---|---|---|
-| REQ-AUTH-001 | Registration, login, logout, session management | identity | `services/auth.py` | `/auth/*` | `users`, `sessions` | `auth/test_login_flow.py` | `security/security-model.md` §2 | DESIGNED |
-| REQ-AUTH-002 | Argon2id password hashing + policy | identity | `core/security.py` | `/auth/password/*` | `users.password_hash` | `auth/test_password_policy.py` | `security/security-model.md` §2 | DESIGNED |
-| REQ-AUTH-003 | Refresh-token rotation with reuse detection | identity | `services/session.py` | `/auth/refresh` | `sessions.family_id` | `auth/test_token_lifecycle.py` | `security/security-model.md` §2 | DESIGNED |
-| REQ-AUTH-004 | Password reset + email verification architecture | identity | `services/account_recovery.py` | `/auth/password/reset-*` | `users.email_verified_at` | `auth/test_recovery_flows.py` | `security/security-model.md` §2 | DESIGNED |
-| REQ-AUTH-005 | Session revocation and account status gating | identity | `services/session.py` | `/auth/sessions` | `sessions.revoked_at` | `auth/test_session_revocation.py` | `security/security-model.md` §2 | DESIGNED |
-| REQ-AUTH-006 | Granular RBAC with 10 tenant roles + platform role | authorization | `authorization/*` | `/roles`, `/permissions` | `roles`, `permissions`, `role_permissions`, `user_roles` | `security/test_authorization_matrix.py` | `security/rbac.md` | DESIGNED |
-| REQ-AUTH-007 | Backend-enforced authorization; frontend guards supplementary | authorization | dependencies + service guards | all | — | `security/test_authorization_matrix.py` | `security/rbac.md` §1.1 | DESIGNED |
-| REQ-AUTH-008 | Never trust client-supplied tenant/user/role | tenancy | `core/tenancy.py` | all | RLS | `security/test_tenant_isolation.py` | `architecture/decisions.md` ADR-0004 | DESIGNED |
-| REQ-SEC-001 | Input validation, mass-assignment prevention | core | Pydantic schemas | all | CHECK constraints | `api/test_mass_assignment.py` | `security/security-model.md` §5 | DESIGNED |
-| REQ-SEC-002 | SQL-injection resistance | db | SQLAlchemy only | all | — | `security/test_injection.py` | `security/security-model.md` §5 | DESIGNED |
-| REQ-SEC-003 | Rate limiting on sensitive endpoints | core | `core/ratelimit.py` | all | — | `security/test_rate_limits.py` | `security/security-model.md` §1 T9 | DESIGNED |
-| REQ-SEC-004 | CORS + security headers + CSRF strategy | api | middleware | all | — | `security/test_security_headers.py` | `security/security-model.md` §7 | DESIGNED |
+| REQ-AUTH-001 | Registration, login, logout, session management | identity | `services/auth.py`, `services/identity.py` | `/auth/*`, `/users/invite`; permissioned registration, no public signup | `users`, `sessions` | `security/test_auth_lifecycle.py`, `security/test_identity_admin.py` | `security/security-model.md` §2 | IMPLEMENTED |
+| REQ-AUTH-002 | Argon2id password hashing + policy | identity | `services/auth.py`, `api/schemas/identity.py` | password/login/invitation operations | Argon2id password hashes | `security/test_auth_lifecycle.py`, `db/test_dev_seed.py` | `security/security-model.md` §2 | IMPLEMENTED |
+| REQ-AUTH-003 | Refresh-token rotation with reuse detection | identity | `authorization/tokens.py`, `repositories/identity.py`, `services/auth.py` | `/auth/refresh` | retained session families | `security/test_auth_lifecycle.py` (reuse, races, expiry) | `security/security-model.md` §2 | IMPLEMENTED |
+| REQ-AUTH-004 | Password reset + email verification architecture | identity | `services/auth_delivery.py`, `integrations/auth_mail.py`, `workers/auth_mail.py` | reset and email verification request/confirm | encrypted outbox; hashed one-time credentials | `security/test_auth_delivery.py`, `unit/test_auth_mail.py` | `security/security-model.md` §2 | IMPLEMENTED |
+| REQ-AUTH-005 | Session revocation and account status gating | identity | `services/{auth,security_administration}.py`, live actor lookup | own/admin session revocation | `sessions`, account/tenant status | `security/test_auth_lifecycle.py`, `security/test_security_administration.py` | `security/security-model.md` §2 | IMPLEMENTED |
+| REQ-AUTH-006 | Granular RBAC with nine tenant roles + one platform role | authorization | `authorization/{permissions,role_matrix,resolution}.py`, `services/identity.py` | `/roles`, `/permissions`, `/users/*/roles` | 101 permissions, 322 baseline grants | `security/test_authorization_matrix.py`, `security/test_mounted_permission_matrix.py` | `security/rbac.md` | IMPLEMENTED |
+| REQ-AUTH-007 | Backend-enforced authorization; frontend guards supplementary | authorization | `api/{deps,route_policy}.py`, service live-state checks | all mounted APIs; explicit reviewed exceptions | — | `security/test_startup_policy.py`, `security/test_mounted_permission_matrix.py`, admin/platform suites | `security/rbac.md` §1.1 | IMPLEMENTED |
+| REQ-AUTH-008 | Never trust client-supplied tenant/user/role | tenancy | `api/deps.py`, signed claim/session matching, scoped repositories | all mounted authenticated APIs | forced RLS | `security/test_auth_lifecycle.py`, `security/test_identity_admin.py`, `db/test_rls_coverage.py` | `architecture/decisions.md` ADR-0004 | IMPLEMENTED |
+| REQ-SEC-001 | Input validation, mass-assignment prevention | core | closed request models, allowlisted sort/mutation fields | current APIs | CHECK/unique/FK constraints | `api/test_openapi_contract.py`, `security/test_identity_admin.py`, `security/test_api_key_lifecycle.py` | `security/security-model.md` §5 | IMPLEMENTED |
+| REQ-SEC-002 | SQL-injection resistance | db | bound SQLAlchemy query values and allowlisted ordering | current auth/admin APIs | no string interpolation of request values | `security/test_injection.py` (query/login/mutation probes under restricted role) | `security/security-model.md` §5 | IMPLEMENTED |
+| REQ-SEC-003 | Rate limiting on sensitive endpoints | core | `api/rate_limits.py`, `core/rate_limits.py`, persistent lockout | credential/recovery/key issuance/MFA-sensitive endpoints | persistent failure counters; Redis/shared counters in production | `security/test_auth_rate_limits.py`, `unit/test_rate_limits.py`, platform/key suites | `security/security-model.md` §1 T9 | IMPLEMENTED |
+| REQ-SEC-004 | CORS + security headers + CSRF strategy | api | `core/middleware.py`, `main.py`; bearer/JSON strategy, no auth cookies | current APIs | — | `test_security_headers.py`, `test_request_context.py` | `security/security-model.md` §7 | IMPLEMENTED |
 | REQ-SEC-005 | File-upload validation and safe storage | files | `services/files.py` | `/files/*` | `file_assets` | `security/test_file_upload.py` | `security/security-model.md` §6 | DESIGNED |
-| REQ-SEC-006 | Secret management, no secrets in source | core | `core/config.py` | — | — | `scripts/check_secrets.py` | `deployment/configuration.md` | DESIGNED |
-| REQ-SEC-007 | Audit trail of security-relevant events | audit | `services/audit.py` | `/audit-logs` | `audit_logs` | `security/test_audit_events.py` | `security/security-model.md` §8 | DESIGNED |
+| REQ-SEC-006 | Secret management, no secrets in source | core | `core/config.py`, staged + working-tree secret scanner | — | hashed credentials, encrypted recovery/MFA material | `architecture/test_secret_scanner.py`, `unit/test_config.py`, lifecycle privacy assertions | `deployment/configuration.md` | IMPLEMENTED |
+| REQ-SEC-007 | Audit trail of security-relevant events | audit | append-only `AuditLogRepository`, safe metadata and transaction-bound service events | `/audit-logs`; platform audit HTTP viewer not implemented | `audit_logs`, separate machine attribution | `security/test_security_administration.py`, `unit/test_audit_safety.py`, auth/platform/key lifecycle suites | `security/security-model.md` §8 | IMPLEMENTED |
 
 ## 3. Waste domain, IoT and operations
 
@@ -117,27 +123,22 @@ otherwise noted.
 
 ## 5. Coverage summary
 
-| Category | Requirements tracked | Implemented | In progress | Designed |
-|---|---|---|---|---|
-| Platform/architecture | 13 | 0 | 13 | 0 |
-| Identity/access/security | 14 | 8 | 6 | 0 |
-| Waste/IoT/operations | 20 | 0 | 0 | 20 |
-| Intelligence/analytics/environment | 22 | 0 | 0 | 22 |
-| **Total** | **69** | **8** | **19** | **42** |
+| Category | Tracked | Implemented (current scope) | In progress | Designed |
+|---|---:|---:|---:|---:|
+| Platform and architecture | 13 | 10 | 2 | 1 |
+| Identity, access and security | 15 | 14 | 0 | 1 |
+| Waste domain, IoT and operations | 25 | 0 | 0 | 25 |
+| Intelligence, analytics and environment | 26 | 0 | 0 | 26 |
+| **Total** | **79** | **24** | **2** | **53** |
 
-Updated 2026-09-27, after Phase 2 commit `7edd518`.
+This summary is counted from the rows above. It is not a claim that all master-spec
+requirements or future security surfaces have been exhaustively proven. Phase 2's
+exit criteria are mapped separately in `reports/phase-2-gate.md`. File uploads remain
+designed; general jobs and frontend-local time presentation remain partial. No row
+is promoted merely because its database table exists.
 
-**Identity/access/security** is the only category with progress, and it is partial:
-the schema, the permission catalogue, the seeded role matrix, row-level security
-and the authentication endpoints exist; the user/role/tenant administration
-endpoints, the adversarial isolation tests and the audit-log service do not.
-
-**Platform/architecture** moved wholesale from *designed* to *in progress* because
-the schema it specifies now exists as migrations and RLS policies. It is not
-*implemented* until the container artefacts, the CI run and the seed script land.
-
-Every requirement in sections 0–80 of the master specification has a row here.
-A requirement with no home would be an architecture gap, and there are none:
-the two items deliberately outside scope (citizen mobile app, billing) are
-recorded in `architecture/domain-model.md` §8 and `risks-and-assumptions.md` §5
-with reasons, not silently dropped.
+The additional API-key, platform registry, action-MFA and operator lifecycle work is
+mapped to executable suites and runbooks in that report and ADRs 0018–0022. Machine
+HTTP ingestion, all-factor-loss recovery, break-glass and the platform audit browser
+remain absent. Production dependencies and deferred Phase 1 container work remain
+explicit prerequisites, not hidden inside an IMPLEMENTED label.

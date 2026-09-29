@@ -63,6 +63,14 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
         "POST",
         "/api/v1/auth/password-reset/confirm",
     ): "Reset completion. The single-use token in the body is the credential.",
+    (
+        "POST",
+        "/api/v1/auth/email/verify-request",
+    ): "Public and neutral so an invited user without a session can request proof of mailbox ownership.",
+    (
+        "POST",
+        "/api/v1/auth/email/verify-confirm",
+    ): "The expiring single-use email code is the credential; no access token is required.",
 }
 
 

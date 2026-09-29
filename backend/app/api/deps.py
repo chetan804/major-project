@@ -23,15 +23,17 @@ from app.authorization.resolution import resolve_permissions
 from app.authorization.tokens import decode_access_token
 from app.core.cache import Cache, get_cache
 from app.core.config import Settings, get_settings
-from app.core.errors import AuthenticationError, ErrorCode, PermissionDeniedError
+from app.core.errors import (
+    AuthenticationError,
+    AuthenticationStateChangedError,
+    ErrorCode,
+    PermissionDeniedError,
+)
 from app.core.logging import get_logger
 from app.db.rls import apply_tenant_context
 from app.db.session import Database, get_database
-from app.models._enums import UserStatus
-from app.models.identity import (
-    Session,
-    User,
-)
+from app.models._enums import TenantStatus, UserStatus
+from app.models.identity import Session, Tenant, User
 
 __all__ = [
     "AuthenticatedActor",
@@ -97,7 +99,9 @@ def get_cache_dep(request: Request) -> Cache:
     return get_cache()
 
 
-async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
+async def get_session(
+    database: Annotated[Database, Depends(get_database_dep)],
+) -> AsyncIterator[AsyncSession]:
     """
     Yield a request-scoped database session.
 
@@ -107,16 +111,21 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
     collection event, a waste load, an audit row and an outbox event, and a
     partial write of those would corrupt operational records).
 
-    An exception escaping the request rolls the transaction back, so a failed
-    request can never leave a half-applied write behind. Long-running work —
-    route optimisation, forecasting, report generation — must not hold this
+    Ordinary exceptions roll back. AuthenticationStateChangedError is the sole
+    exception: a completed security denial must persist counters, audit records
+    and replay revocations even though its HTTP response is an error.
+    Long-running work — route optimisation, forecasting, report generation — must not hold this
     session open while it computes; it reads, closes the transaction, computes,
     then writes in a second short transaction.
     """
-    database = get_database_dep(request)
     session = database.session()
     try:
         yield session
+    except AuthenticationStateChangedError:
+        # A denied login/replayed refresh is still a completed security event.
+        # Rolling it back would disable lockout and resurrect stolen sessions.
+        await session.commit()
+        raise
     except Exception:
         await session.rollback()
         raise
@@ -210,8 +219,26 @@ async def get_current_actor(
             message="Access token is not valid.",
         )
 
+    # The signed tenant claim is verified before any tenant-scoped query. RLS
+    # and explicit predicates must both agree on the token's entire identity.
+    await apply_tenant_context(session, claims.tenant_id)
+    tenant = await session.get(Tenant, claims.tenant_id)
+    if (
+        tenant is None
+        or tenant.deleted_at is not None
+        or tenant.status not in (TenantStatus.ACTIVE, TenantStatus.TRIAL)
+    ):
+        raise AuthenticationError(
+            code=ErrorCode.ACCOUNT_SUSPENDED, message="This account cannot sign in."
+        )
     live_session = (
-        await session.execute(select(Session).where(Session.id == claims.session_id))
+        await session.execute(
+            select(Session).where(
+                Session.id == claims.session_id,
+                Session.tenant_id == claims.tenant_id,
+                Session.user_id == claims.subject,
+            )
+        )
     ).scalar_one_or_none()
     if live_session is None or live_session.revoked_at is not None:
         raise AuthenticationError(
@@ -225,7 +252,13 @@ async def get_current_actor(
         )
 
     user = (
-        await session.execute(select(User).where(User.id == claims.subject))
+        await session.execute(
+            select(User).where(
+                User.id == claims.subject,
+                User.tenant_id == claims.tenant_id,
+                User.deleted_at.is_(None),
+            )
+        )
     ).scalar_one_or_none()
     if user is None:
         raise AuthenticationError(
@@ -336,10 +369,9 @@ async def get_tenant_session(
     leak into the next request that reuses the pooled connection.
     """
     await apply_tenant_context(session, actor.tenant_id)
-    try:
-        yield session
-    finally:
-        await session.rollback()
+    # The parent get_session dependency owns commit/rollback/close. Rolling back
+    # here first would erase durable authentication-denial writes on unwinding.
+    yield session
 
 
 #: The authenticated actor for a request.

@@ -17,11 +17,16 @@ than hidden in a repository flag.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import selectinload
 
+from app.core.audit_privacy import safe_audit_data
+from app.core.context import get_request_id
+from app.core.errors import InputValidationError, PermissionDeniedError
+from app.models._enums import UserStatus
 from app.models.identity import (
     ApiKey,
     AuditLog,
@@ -34,6 +39,19 @@ from app.models.identity import (
     UserRole,
 )
 from app.repositories.base import BaseRepository, PaginationResult, PlatformRepository
+
+# A permanent recovery administrator can inspect accounts and restore grants.
+# An elevation bit alone is insufficient: it cannot perform any operation.
+ADMIN_RECOVERY_PERMISSIONS = frozenset(
+    {
+        "users.read",
+        "users.write",
+        "roles.read",
+        "roles.write",
+        "roles.assign",
+        "roles.assign.elevate",
+    }
+)
 
 __all__ = [
     "ApiKeyRepository",
@@ -65,11 +83,14 @@ class UserRepository(BaseRepository[User]):
         """
         return self._base_query().where(User.deleted_at.is_(None))
 
-    async def get_active(self, user_id: UUID) -> User | None:
-        result = await self.session.execute(self._visible_query().where(User.id == user_id))
+    async def get_active(self, user_id: UUID, *, for_update: bool = False) -> User | None:
+        query = self._visible_query().where(User.id == user_id)
+        if for_update:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
-    async def get_by_email(self, email: str) -> User | None:
+    async def get_by_email(self, email: str, *, for_update: bool = False) -> User | None:
         """
         The user with this email **in this tenant**.
 
@@ -77,9 +98,10 @@ class UserRepository(BaseRepository[User]):
         ``lower(email)`` and a case-sensitive lookup here would fail to find a user
         the schema considers a duplicate of an existing one.
         """
-        result = await self.session.execute(
-            self._visible_query().where(func.lower(User.email) == email.strip().lower())
-        )
+        query = self._visible_query().where(func.lower(User.email) == email.strip().lower())
+        if for_update:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
     async def list_users(
@@ -100,6 +122,8 @@ class UserRepository(BaseRepository[User]):
         unescaped user-supplied pattern would let a caller widen their own search
         to "everyone" or slow the query with a leading wildcard.
         """
+        if page < 1 or page_size < 1 or page_size > 100:
+            raise InputValidationError(message="Invalid pagination bounds.")
         query = self._visible_query()
         if status:
             query = query.where(User.status == status)
@@ -114,7 +138,12 @@ class UserRepository(BaseRepository[User]):
                 User.id.in_(
                     select(UserRole.user_id)
                     .join(Role, Role.id == UserRole.role_id)
-                    .where(Role.code == role_code, Role.tenant_id == self.tenant_id)
+                    .where(
+                        Role.code == role_code,
+                        Role.tenant_id == self.tenant_id,
+                        UserRole.tenant_id == self.tenant_id,
+                        (UserRole.expires_at.is_(None)) | (UserRole.expires_at > _now()),
+                    )
                 )
             )
         total = int(
@@ -122,7 +151,7 @@ class UserRepository(BaseRepository[User]):
                 await self.session.execute(select(func.count()).select_from(query.subquery()))
             ).scalar_one()
         )
-        query = self._apply_sort(query, sort)
+        query = self._apply_sort(query, sort).order_by(User.id)
         result = await self.session.execute(query.limit(page_size).offset((page - 1) * page_size))
         return PaginationResult(
             list(result.scalars().unique().all()),
@@ -131,10 +160,9 @@ class UserRepository(BaseRepository[User]):
             total=total,
         )
 
-    async def count_admins(self) -> int:
-        """How many users hold a role with ``roles.assign.elevate`` — used to refuse removing the last one."""
-        result = await self.session.execute(
-            select(func.count(func.distinct(User.id)))
+    def _permanent_admins(self) -> Select:
+        return (
+            select(User.id)
             .join(UserRole, UserRole.user_id == User.id)
             .join(Role, Role.id == UserRole.role_id)
             .join(RolePermission, RolePermission.role_id == Role.id)
@@ -142,10 +170,31 @@ class UserRepository(BaseRepository[User]):
             .where(
                 User.tenant_id == self.tenant_id,
                 User.deleted_at.is_(None),
-                Permission.code == "roles.assign.elevate",
+                User.status == UserStatus.ACTIVE,
+                UserRole.tenant_id == self.tenant_id,
+                UserRole.expires_at.is_(None),
+                Role.tenant_id == self.tenant_id,
+                RolePermission.tenant_id == self.tenant_id,
+                Permission.code.in_(ADMIN_RECOVERY_PERMISSIONS),
             )
+            .group_by(User.id)
+            .having(func.count(func.distinct(Permission.code)) == len(ADMIN_RECOVERY_PERMISSIONS))
         )
-        return int(result.scalar_one())
+
+    async def count_admins(self) -> int:
+        """Count active, nondeleted users with all permanent recovery permissions."""
+        return int(
+            (
+                await self.session.execute(
+                    select(func.count()).select_from(self._permanent_admins().subquery())
+                )
+            ).scalar_one()
+        )
+
+    async def is_permanent_admin(self, user_id: UUID) -> bool:
+        return (
+            await self.session.execute(self._permanent_admins().where(User.id == user_id))
+        ).first() is not None
 
 
 def _escape_like(value: str) -> str:
@@ -188,7 +237,9 @@ class SessionRepository(BaseRepository[Session]):
     async def get_live(self, session_id: UUID) -> Session | None:
         """A session that has not been revoked and has not expired."""
         result = await self.session.execute(
-            self._base_query().where(
+            self._base_query()
+            .execution_options(populate_existing=True)
+            .where(
                 Session.id == session_id,
                 Session.revoked_at.is_(None),
                 Session.expires_at > _now(),
@@ -198,7 +249,9 @@ class SessionRepository(BaseRepository[Session]):
 
     async def find_by_refresh_hash(self, token_hash: str) -> Session | None:
         result = await self.session.execute(
-            self._base_query().where(Session.refresh_token_hash == token_hash)
+            self._base_query()
+            .where(Session.refresh_token_hash == token_hash)
+            .execution_options(populate_existing=True)
         )
         return result.scalars().one_or_none()
 
@@ -244,7 +297,7 @@ class ApiKeyRepository(BaseRepository[ApiKey]):
     sortable_fields = ("created_at", "name", "last_used_at", "expires_at")
     resource_name = "api key"
 
-    async def find_by_prefix(self, key_prefix: str) -> ApiKey | None:
+    async def find_by_prefix(self, key_prefix: str, *, for_update: bool = False) -> ApiKey | None:
         """
         The key whose visible prefix matches.
 
@@ -253,9 +306,10 @@ class ApiKeyRepository(BaseRepository[ApiKey]):
         tenant-scoped, which is correct: a key presented to the wrong tenant is
         simply not found.
         """
-        result = await self.session.execute(
-            self._base_query().where(ApiKey.key_prefix == key_prefix)
-        )
+        query = self._base_query().where(ApiKey.key_prefix == key_prefix)
+        if for_update:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        result = await self.session.execute(query)
         return result.scalars().one_or_none()
 
 
@@ -263,16 +317,20 @@ class AuditLogRepository(BaseRepository[AuditLog]):
     """
     The append-only audit trail.
 
-    Note what is absent: no ``update`` and no ``soft_delete``. ``audit_logs`` has
-    no ``updated_at`` and no ``deleted_at``, so there is nothing here to override —
-    immutability is structural rather than promised. Retention is an archival job
-    that copies rows out before any deletion, and that job lives in the workers
-    layer, not here.
+    Inherited generic mutations are explicitly refused. Absence of updated_at or
+    deleted_at alone does not enforce immutability. The runtime DB role must have
+    only SELECT/INSERT here; retention requires a separate archival role/job.
     """
 
     model = AuditLog
     sortable_fields = ("created_at", "action", "resource_type")
     resource_name = "audit log"
+
+    async def update(self, entity: AuditLog, **values: Any) -> AuditLog:
+        raise PermissionDeniedError(message="Audit records are append-only.")
+
+    async def soft_delete(self, entity: AuditLog) -> None:
+        raise PermissionDeniedError(message="Audit records are append-only.")
 
     async def record(
         self,
@@ -294,22 +352,32 @@ class AuditLogRepository(BaseRepository[AuditLog]):
         ``actor`` is the :class:`~app.authorization.context.Actor` that performed
         the action, and only its identity is recorded — never a token, never a
         credential. ``metadata`` is the caller's structured detail and is stored as
-        JSONB; it must not contain secrets, and ``tests/architecture``'s secret
-        scanner is the backstop for that.
+        JSONB with bounded credential redaction. Never pass arbitrary request
+        bodies or unlabelled secrets: pattern redaction cannot identify them all.
         """
+        actor_tenant = getattr(actor, "tenant_id", None)
+        if actor_tenant is not None and actor_tenant != self.tenant_id:
+            raise PermissionDeniedError(message="Audit actor must belong to the bound tenant.")
         entry = AuditLog(
             tenant_id=self.tenant_id,
-            actor_user_id=getattr(actor, "user_id", None),
+            actor_user_id=getattr(actor, "user_id", None)
+            if getattr(actor, "auth_type", "USER") != "API_KEY"
+            else None,
+            actor_api_key_id=getattr(actor, "user_id", None)
+            if getattr(actor, "auth_type", "USER") == "API_KEY"
+            else None,
             actor_type=getattr(actor, "auth_type", "USER"),
             action=action,
             resource_type=resource_type,
             resource_id=resource_id,
             outcome=outcome,
-            changes=changes,
-            request_id=request_id,
+            actor_label=safe_audit_data({"label": getattr(actor, "full_name", None)})["label"],
+            request_id=request_id or get_request_id(),
             ip_address=ip_address,
-            user_agent=user_agent,
-            event_metadata=metadata,
+            user_agent=safe_audit_data({"agent": user_agent})["agent"],
+            event_metadata=safe_audit_data(
+                {**(metadata or {}), **({"changes": changes} if changes else {})}
+            ),
         )
         self.session.add(entry)
         await self.session.flush()

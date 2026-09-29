@@ -237,6 +237,7 @@ def test_the_live_repository_is_clean(scanner: ModuleType) -> None:
     the scanner's own test run fails on a real leak rather than only ``make audit``.
     """
     findings = scanner.scan(scanner.tracked_files())
+    findings += scanner.scan_index(scanner.tracked_files())
     findings += scanner.check_env_file()
     findings += scanner.check_env_example()
 
@@ -264,3 +265,28 @@ def test_the_scanner_would_catch_a_leak_in_a_tracked_file(
 
     assert len(findings) >= 2, f"expected both credential shapes to be reported: {findings}"
     assert all("leaked_settings.py" in finding for finding in findings)
+
+
+@pytest.mark.parametrize("staged_leak", [True, False])
+def test_index_and_working_copy_are_scanned_independently(
+    scanner, tmp_path, monkeypatch, staged_leak
+):
+    import subprocess
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(repository)], check=True)  # noqa: S603,S607 - fixed argv in a temporary test repository
+    path = repository / "settings.py"
+    bad = HARDCODED_ASSIGNMENT + "\n"
+    good = 'JWT_SECRET_KEY = "CHANGE_ME"\n'
+    path.write_text(bad if staged_leak else good)
+    subprocess.run(["git", "add", "settings.py"], cwd=repository, check=True)  # noqa: S607 - fixed test command, no shell
+    path.write_text(good if staged_leak else bad)
+    monkeypatch.setattr(scanner, "REPO_ROOT", repository)
+    files = scanner.tracked_files()
+    index_findings, worktree_findings = scanner.scan_index(files), scanner.scan(files)
+    assert bool(index_findings) is staged_leak
+    assert bool(worktree_findings) is not staged_leak
+    assert all(
+        HIGH_ENTROPY_SECRET not in finding for finding in [*index_findings, *worktree_findings]
+    )

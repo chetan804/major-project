@@ -24,6 +24,9 @@ from fastapi.openapi.utils import get_openapi
 
 from app.api.errors import register_exception_handlers
 from app.api.health import router as system_router
+from app.api.rate_limits import AuthRateLimitMiddleware
+from app.api.route_policy import mounted_surface, permission_dependencies, validate_route_policy
+from app.api.schemas.errors import ErrorEnvelope
 from app.api.v1 import api_v1_router
 from app.core.cache import init_cache, reset_cache
 from app.core.config import Settings, get_settings
@@ -34,6 +37,7 @@ from app.core.middleware import (
     RequestContextMiddleware,
     SecurityHeadersMiddleware,
 )
+from app.core.rate_limits import build_limiter
 from app.db.session import init_database, reset_database
 
 logger = get_logger(__name__)
@@ -42,10 +46,10 @@ API_DESCRIPTION = """
 EcoMind-AI is an environmental intelligence platform that converts
 waste-management data into operational decisions.
 
-It covers the operational lifecycle end to end: telemetry ingestion, bin
-monitoring, collection planning, route optimisation, driver execution,
-facility processing, material recovery, carbon estimation, forecasting,
-anomaly detection and reporting.
+This build implements authentication, tenant isolation, RBAC, audit/session
+administration, API-key lifecycle and the guarded platform control plane.
+Waste-domain workflows, device HTTP ingestion, optimization and analytics are
+planned phases; their database models are not a claim of implemented APIs.
 
 **Conventions**
 
@@ -82,6 +86,9 @@ def _configure_lifespan(app: FastAPI) -> None:  # pragma: no cover - wiring only
                 "Refusing to start with an invalid configuration:\n  - " + "\n  - ".join(problems)
             )
 
+        # Evaluate after all routers are mounted, before acquiring resources.
+        validate_route_policy(app, settings.api_v1_prefix)
+
         # Both initialisers adopt a handle that a harness or embedding process has
         # already bound, and build one from these settings only if nothing is
         # bound. That is what lets the test suite supply a NullPool database, and
@@ -94,6 +101,7 @@ def _configure_lifespan(app: FastAPI) -> None:  # pragma: no cover - wiring only
             echo=settings.db_echo,
         )
         app.state.cache = init_cache(settings)
+        app.state.auth_rate_limiter = build_limiter(settings)
 
         get_metrics().app_info.labels(
             version=settings.app_version, environment=settings.environment
@@ -130,6 +138,7 @@ def _configure_lifespan(app: FastAPI) -> None:  # pragma: no cover - wiring only
             from app.core.cache import get_cache
             from app.db.session import get_database
 
+            await app.state.auth_rate_limiter.close()
             await get_cache().close()
             await get_database().dispose()
             reset_database()
@@ -175,6 +184,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # generates still travels back out through CORS, the security headers and
     # the request context, and therefore carries the complete header set.
     # -----------------------------------------------------------------------
+    app.add_middleware(AuthRateLimitMiddleware, settings=resolved)
     app.add_middleware(ErrorEnvelopeMiddleware, debug=resolved.debug)
     app.add_middleware(
         CORSMiddleware,
@@ -215,6 +225,49 @@ def _install_openapi(app: FastAPI, settings: Settings) -> None:
             description=app.description,
             routes=app.routes,
         )
+        # Actor authentication reads Authorization explicitly. Publish the same
+        # bearer contract rather than relying on a Security() helper we do not use.
+        schema.setdefault("components", {}).setdefault("securitySchemes", {})["BearerAuth"] = {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "Access token for a live session. Resource, tenant and MFA checks still apply.",
+        }
+        envelope_schema = ErrorEnvelope.model_json_schema(
+            ref_template="#/components/schemas/{model}"
+        )
+        definitions = envelope_schema.pop("$defs", {})
+        schema["components"].setdefault("schemas", {}).update(definitions)
+        schema["components"]["schemas"]["ErrorEnvelope"] = envelope_schema
+        common_errors = {
+            "400": "Invalid request (including request validation).",
+            "401": "Authentication or credential confirmation required.",
+            "403": "Permission, account state or action confirmation denied.",
+            "404": "Resource not found or not visible to this actor.",
+            "409": "Conflicting resource state.",
+            "422": "Domain/business rule rejected the operation (not request validation).",
+            "429": "Rate limit exceeded.",
+            "500": "Unexpected server error; no internal detail is disclosed.",
+            "503": "A required dependency is unavailable.",
+        }
+        for surface in mounted_surface(app):
+            authenticated, guards = permission_dependencies(surface)
+            required = sorted({code for guard in guards for code in guard.__ecomind_permissions__})
+            for method in surface.methods:
+                operation = schema.get("paths", {}).get(surface.path, {}).get(method.lower())
+                if operation is not None:
+                    if authenticated:
+                        operation["security"] = [{"BearerAuth": []}]
+                    operation["x-required-permissions"] = required
+                    for status, description in common_errors.items():
+                        operation.setdefault("responses", {})[status] = {
+                            "description": description,
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/ErrorEnvelope"}
+                                }
+                            },
+                        }
         schema.setdefault("info", {})["x-environment"] = settings.environment
         schema["info"]["x-api-version"] = "v1"
         # Documented once here so clients can discover the correlation contract

@@ -21,6 +21,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     ARRAY,
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -191,7 +192,18 @@ class User(Base, UUIDPrimaryKeyMixin, TenantScopedMixin, TimestampMixin, SoftDel
     mfa_secret_encrypted: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
-        doc="Architecture only: the column exists so MFA can be added without a migration.",
+        doc="Active platform TOTP seed, Fernet-encrypted with bound principal/factor identity.",
+    )
+    platform_mfa_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    mfa_factor_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    mfa_last_counter: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    mfa_recovery_hashes: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    mfa_pending_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mfa_pending_session_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    mfa_pending_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     preferred_timezone: Mapped[str | None] = mapped_column(Text, nullable=True)
     preferred_locale: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -208,6 +220,11 @@ class User(Base, UUIDPrimaryKeyMixin, TenantScopedMixin, TimestampMixin, SoftDel
         DateTime(timezone=True),
         nullable=True,
         doc="When the outstanding reset token stops being accepted.",
+    )
+
+    email_verification_token_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email_verification_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     roles: Mapped[list[UserRole]] = relationship(
@@ -370,8 +387,8 @@ class Session(Base, TenantKeyMixin):
     token itself is returned to the client once and never persisted.
 
     Rotation reuse detection: presenting a token whose hash belongs to a
-    superseded row in the same ``family_id`` revokes the whole family, because
-    the only honest explanation is that a token was stolen.
+    superseded row in the same ``family_id`` revokes the whole family. A retry
+    after a lost response is indistinguishable from theft and also fails closed.
     """
 
     __tablename__ = "sessions"
@@ -379,6 +396,7 @@ class Session(Base, TenantKeyMixin):
         Index("ix_sessions_user_active", "user_id", "revoked_at"),
         Index("ix_sessions_family", "family_id"),
         Index("ix_sessions_expires", "expires_at"),
+        Index("ix_sessions_tenant_issued", "tenant_id", text("issued_at DESC"), text("id DESC")),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -399,6 +417,15 @@ class Session(Base, TenantKeyMixin):
         doc="Rotation family. Reuse of any member revokes the family.",
     )
     previous_session_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    platform_mfa_factor_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    platform_mfa_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    platform_reauthenticated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        doc="Explicit platform password confirmation; never inherited by refresh.",
+    )
     issued_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -417,14 +444,22 @@ class ApiKey(Base, TenantScopedMixin, TimestampMixin):
     A long-lived credential for a device gateway or a partner integration.
 
     Only a prefix and a hash are stored, so a database disclosure does not yield
-    a usable key. ``scopes`` restricts what the key may do; the telemetry
-    ingestion endpoint is reachable only through this path (``rbac.md`` §4.1).
+    a usable key. ``scopes`` restricts what the key may do. Future telemetry
+    endpoints must use the machine authentication path, not human JWT grants
+    (``rbac.md`` §4.1); those ingestion endpoints are not implemented yet.
     """
 
     __tablename__ = "api_keys"
     __table_args__ = (
         Index("uq_api_keys_prefix", "key_prefix", unique=True),
         Index("ix_api_keys_tenant", "tenant_id"),
+        Index("ix_api_keys_tenant_created", "tenant_id", text("created_at DESC"), text("id DESC")),
+        Index(
+            "uq_api_keys_rotation_source",
+            "rotation_of_id",
+            unique=True,
+            postgresql_where=text("rotation_of_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, server_default=text("gen_random_uuid()"))
@@ -457,14 +492,16 @@ class AuditLog(Base, TenantKeyMixin):
     """
     The append-only compliance trail (``erd.md`` §2.10).
 
-    Immutability is structural rather than promised: there is no ``updated_at``,
-    no soft-delete column and no code path that updates or deletes a row.
-    Retention is a separate archival job that archives before it deletes.
+    The repository refuses updates/deletion and the API has no mutation path.
+    The runtime DB role must have SELECT/INSERT only; column layout alone does
+    not provide database immutability. Retention needs a separate archival role.
     """
 
     __tablename__ = "audit_logs"
     __table_args__ = (
-        Index("ix_audit_logs_tenant_created", "tenant_id", text("created_at DESC")),
+        Index(
+            "ix_audit_logs_tenant_created", "tenant_id", text("created_at DESC"), text("id DESC")
+        ),
         Index("ix_audit_logs_resource", "resource_type", "resource_id"),
         Index("ix_audit_logs_actor", "actor_user_id", text("created_at DESC")),
     )
@@ -477,6 +514,9 @@ class AuditLog(Base, TenantKeyMixin):
     )
     actor_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    actor_api_key_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True, index=True
     )
     actor_type: Mapped[ActorType] = mapped_column(
         pg_enum(ActorType, "actor_type"),

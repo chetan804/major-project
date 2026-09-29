@@ -11,13 +11,13 @@
 #   keeps one code path for local development, tests and CI, and removes the
 #   version drift between a CI service image and a developer's cluster.
 #
-# * **`fail-fast: false`.** A lint failure and a test failure are independent
+# * **Independent jobs.** A lint failure and a test failure are independent
 #   findings. Reporting only the first one costs a second push to discover the
 #   second, which is exactly the cycle CI exists to shorten.
 #
-# Honest limitation: this workflow has not been executed. The development sandbox
-# has no network access to GitHub Actions and no Docker, so the YAML is authored
-# and reviewed but unverified. It is marked as such in docs/project-state.md.
+# Local gate evidence and hosted CI are distinct. The PR checks report hosted
+# execution; this workflow does not certify external SMTP, real Redis, Docker
+# images, frontend builds (not implemented yet), or production load.
 # ---------------------------------------------------------------------------
 name: CI
 

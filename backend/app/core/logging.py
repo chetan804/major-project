@@ -45,7 +45,13 @@ _SENSITIVE_KEY_FRAGMENTS: tuple[str, ...] = (
     "token",
     "authorization",
     "apikey",
+    "keyhash",
+    "totp",
+    "otpauth",
+    "recoverycode",
     "privatekey",
+    "encryptionkey",
+    "encryptedpayload",
     "credential",
     "sessionid",
     "cookie",
@@ -64,6 +70,8 @@ def _normalise_key(key: str) -> str:
 
 #: Patterns that mask credential material embedded in free text.
 _VALUE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"otpauth://[^\s\"']+", re.IGNORECASE), REDACTED),
+    (re.compile(r"(?<![A-Za-z0-9_-])rc1_[A-Za-z0-9_-]{32}(?![A-Za-z0-9_-])"), REDACTED),
     (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 " + REDACTED),
     # A JSON Web Token: three base64url segments separated by dots.
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"), REDACTED),
@@ -71,6 +79,11 @@ _VALUE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"(?i)\b(password|secret|token|api_key)=([^\s;&\"']+)"),
         r"\1=" + REDACTED,
+    ),
+    # Our API key: a 12-character public prefix and a 43-character secret.
+    (
+        re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{12}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"),
+        REDACTED,
     ),
     # Credentials embedded in a URL: scheme://user:password@host
     (re.compile(r"(?i)(://[^:/\s]+):([^@\s]+)@"), r"\1:" + REDACTED + "@"),

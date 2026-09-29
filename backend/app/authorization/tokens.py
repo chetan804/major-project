@@ -6,9 +6,9 @@ Two kinds of credential exist here, and they are deliberately different:
 * an **access token** is a short-lived signed JWT. It is verified without a
   database round trip, but it embeds the session id, so a revoked session stops
   working immediately instead of when the token expires;
-* a **refresh token** is a long-lived opaque random string. Only its SHA-256
-  hash is stored, so a database disclosure yields no usable token, and rotation
-  detects reuse (a stolen token shows up as a replay).
+* a **refresh token** carries a public, untrusted tenant routing hint and a
+  384-bit random secret. Clients treat the whole value as opaque. Only its
+  SHA-256 hash is stored; retained rotation history detects reuse.
 
 Nothing in this module reads a configuration default: the signing key comes from
 ``Settings`` and is never logged, including on the error paths.
@@ -17,6 +17,7 @@ Nothing in this module reads a configuration default: the signing key comes from
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 import uuid
 from datetime import timedelta
@@ -37,6 +38,7 @@ __all__ = [
     "generate_refresh_token",
     "hash_token",
     "new_session_id",
+    "refresh_token_tenant",
     "tokens_match",
 ]
 
@@ -84,14 +86,32 @@ def new_session_id() -> uuid.UUID:
     return uuid.uuid4()
 
 
-def generate_refresh_token() -> str:
+def generate_refresh_token(tenant_id: uuid.UUID) -> str:
     """
     A 384-bit opaque refresh token.
 
     ``secrets.token_urlsafe`` draws from the operating system's CSPRNG, so the
     token is not predictable from a previous token or from a timestamp.
     """
-    return secrets.token_urlsafe(48)
+    # The prefix is a public routing hint, NOT proof of tenant membership. The
+    # full token hash must match inside that tenant before any action is taken.
+    return f"rt1.{tenant_id}.{secrets.token_urlsafe(48)}"
+
+
+def refresh_token_tenant(token: str) -> uuid.UUID:
+    """Read the untrusted routing hint; malformed/legacy tokens fail closed."""
+    parts = token.split(".")
+    try:
+        if len(parts) != 3 or parts[0] != "rt1" or not re.fullmatch(r"[A-Za-z0-9_-]{64}", parts[2]):
+            raise ValueError("Invalid refresh format")
+        tenant_id = uuid.UUID(parts[1])
+        if str(tenant_id) != parts[1]:
+            raise ValueError("Noncanonical tenant")
+        return tenant_id
+    except ValueError as exc:
+        raise AuthenticationError(
+            code=ErrorCode.TOKEN_INVALID, message="Refresh token is not valid."
+        ) from exc
 
 
 def hash_token(token: str) -> str:
