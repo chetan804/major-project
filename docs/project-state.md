@@ -17,7 +17,7 @@ Update it at the end of every working session (section 76).
 | Baseline commit | `d34fda2` (merged Phase 2 foundation) |
 | Architecture status | Coherent and complete at design level; no known blocking open question |
 | Gate status | lint, format, mypy, secret scan and migration drift all clean; **1638 passed, 6 skipped** |
-| Open PR | [#4 — Complete Phase 2](https://github.com/chetan804/major-project/pull/4), from this branch into `main`; hosted checks are authoritative on the PR |
+| Delivery | [#4 — Complete Phase 2](https://github.com/chetan804/major-project/pull/4) **merged** at `22de578`; generated-fixture cleanup follows from the same session branch |
 
 ---
 
@@ -133,7 +133,7 @@ No models trained, no metrics published, **no accuracy claims made anywhere**.
 
 ## 8. Tests
 
-`make test` → **1638 passed, 6 skipped**, 0 failed (~358 s).
+`make test` → **1638 passed, 6 skipped**, 0 failed (~309 s).
 
 | Marker | Files | What it pins |
 |---|---|---|
@@ -573,7 +573,11 @@ must be wrapped in `Depends(...)` explicitly — see `app/api/deps.py`.
   GitGuardian separately classified two literal HMAC test identity tuples as generic
   authentication secrets; they were never service credentials. The follow-up generates
   those identity fixtures at runtime without weakening the assertions or suppressing
-  detectors. The PR checks show the result for the latest revision.
+  detectors. PR #4 merged while checks were being reviewed, before this fixture
+  cleanup was pushed. The follow-up from the same branch carries only the generated
+  fixtures and documentation, not another phase or any production behavior change.
+  Repeated full local gate after cleanup: **1638 passed / 6 skipped** (308.75 s).
+  Follow-up PR checks are the authoritative hosted result for that revision.
 * Updated phase status, requirements traceability, gate evidence and PR scope. No
   production SMTP/Redis/load, frontend, container or emergency-access claim. Pending
   privileged features remain unavailable and do not block the original Phase 2 gate.
