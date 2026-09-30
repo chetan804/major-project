@@ -2,7 +2,7 @@
 
 **Decision: COMPLETE against the Phase 2 build/test/gate in `docs/phases.md`.**
 **Date:** 2026-09-29. **Branch:** `arena/01a0eaec-major-project`.
-**Pull request:** [#4](https://github.com/chetan804/major-project/pull/4).
+**Delivery pull request:** [#4](https://github.com/chetan804/major-project/pull/4) (merged).
 **Baseline:** `d34fda2`; this report covers the accumulated Phase 2 work after that
 foundation, not just the final startup-policy change. Phase 3 is next, not started.
 
@@ -92,7 +92,7 @@ remain. See the platform runbooks for the precise custody/rollback rules.
 
 ## Final verification
 
-* `make gate`: **1,638 passed, 6 skipped**, no failures (357.77 s); lint/format, mypy, secret
+* `make gate`: **1,638 passed, 6 skipped**, no failures (308.75 s); lint/format, mypy, secret
   scan and migration drift pass. Full local log: `.runtime/phase2-final-gate.log`
   (ignored runtime evidence, not committed data).
 * Six skips are explicit architecture-layer exclusions for composition/simulation
@@ -103,6 +103,12 @@ remain. See the platform runbooks for the precise custody/rollback rules.
   `git diff --check` is clean. No local env, dev account, mailbox or database is in Git.
 * Production-like limited DB roles are used by the integration tests. Local mail
   and memory/fakeredis adapters are labelled; external dependencies are not inferred.
+* Hosted lint/type/secret and real PostgreSQL jobs passed on the delivery PR
+  ([run 36609556120](https://github.com/chetan804/major-project/actions/runs/36609556120)).
+  GitGuardian separately flagged two synthetic HMAC test identity tuples, never
+  deployed credentials. They are now generated at runtime rather than suppressed;
+  the full local gate was rerun after that cleanup. The delivery PR merged before
+  the cleanup push, so the test-only fix is a same-branch follow-up.
 * GitHub CI is reported separately by the PR checks. Local verification is not
   described as a successful hosted run before GitHub reports one.
 
